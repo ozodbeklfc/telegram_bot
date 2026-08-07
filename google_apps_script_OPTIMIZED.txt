@@ -1,0 +1,240 @@
+// ======================================================================
+// ОПТИМИЗИРОВАННАЯ ВЕРСИЯ — для работы с большими листами (5000+ строк)
+// и 10-15 одновременными пользователями.
+//
+// Что изменилось по сравнению с исходной версией:
+// 1. Логин: данные пользователей кэшируются на 5 минут (CacheService),
+//    вместо повторного построчного сканирования листа на каждый запрос.
+// 2. Проверка ИНН: используется TextFinder (нативный быстрый поиск Google)
+//    вместо ручного JS-цикла по всем строкам — на больших листах на
+//    порядок быстрее.
+// 3. Запись (Прикрепление/Добавление): обёрнута в LockService, чтобы
+//    одновременные заявки от разных агентов не конфликтовали при записи.
+// ======================================================================
+
+var CACHE_TTL_SECONDS = 300; // 5 минут — как долго доверяем кэшу логинов
+var LOCK_WAIT_MS = 10000;    // сколько ждать освобождения блокировки на запись
+
+function doPost(e) {
+  try {
+    var data = JSON.parse(e.postData.contents);
+    var action = data.action;
+
+    if (action === "check_inn") {
+      return handleCheckInn(data);
+    }
+    if (action === "login") {
+      return handleLogin(data);
+    }
+    if (action === "attach") {
+      return handleAttach(data);
+    }
+    if (action === "add_tt") {
+      return handleAddTt(data);
+    }
+
+    return createJsonResponse({ success: false, message: "Неизвестное действие" });
+
+  } catch (err) {
+    return createJsonResponse({ success: false, message: err.toString() });
+  }
+}
+
+// ======================================================================
+// ЛОГИН — с кэшированием карты "логин -> пароль"
+// ======================================================================
+
+function handleLogin(data) {
+  var login = String(data.login || '').trim().toLowerCase();
+  var password = String(data.password || '').trim();
+
+  if (!login || !password) {
+    return createJsonResponse({ success: false, message: "Заполните логин и пароль" });
+  }
+
+  var usersMap = getUsersMap();
+  if (usersMap === null) {
+    return createJsonResponse({ success: false, message: "Лист с пользователями не найден!" });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(usersMap, login) && usersMap[login] === password) {
+    return createJsonResponse({
+      success: true,
+      message: "Успешный вход!",
+      user: { login: login }
+    });
+  }
+
+  return createJsonResponse({ success: false, message: "Неверный логин или пароль" });
+}
+
+function getUsersMap() {
+  var cached = getCachedJson("users_map");
+  if (cached !== null) return cached;
+
+  var userSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Пользователи");
+  if (!userSheet) return null;
+
+  var rows = userSheet.getDataRange().getValues();
+  var map = {};
+  for (var j = 1; j < rows.length; j++) {
+    var login = String(rows[j][0]).trim().toLowerCase();
+    if (!login) continue;
+    map[login] = String(rows[j][1]).trim();
+  }
+
+  setCachedJson("users_map", map, CACHE_TTL_SECONDS);
+  return map;
+}
+
+// ======================================================================
+// ПРОВЕРКА ИНН — через TextFinder (без построчного JS-цикла)
+// ======================================================================
+
+function handleCheckInn(data) {
+  var innToCheck = String(data.inn).trim();
+  var ttSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Клиентская база");
+
+  if (!ttSheet) {
+    return createJsonResponse({ success: false, message: "Лист 'Клиентская база' не найден в базе данных!" });
+  }
+
+  var lastRow = ttSheet.getLastRow();
+  if (lastRow < 2) {
+    return createJsonResponse({ success: true, exists: false });
+  }
+
+  // ИНН ищем в колонке C (как и в исходном скрипте — индекс 2 при 0-based)
+  var innColumnRange = ttSheet.getRange(2, 3, lastRow - 1, 1); // C2:C{lastRow}
+  var match = innColumnRange.createTextFinder(innToCheck).matchEntireCell(true).findNext();
+
+  if (!match) {
+    return createJsonResponse({ success: true, exists: false });
+  }
+
+  var row = match.getRow();
+  var rowValues = ttSheet.getRange(row, 1, 1, 2).getValues()[0]; // колонки A и B
+
+  return createJsonResponse({
+    success: true,
+    exists: true,
+    pointCode: rowValues[0],
+    pointName: rowValues[1],
+  });
+}
+
+// ======================================================================
+// ЗАПИСЬ — обёрнута в LockService, чтобы конкурентные заявки не конфликтовали
+// ======================================================================
+
+function handleAttach(data) {
+  var lock = LockService.getScriptLock();
+  var gotLock = lock.tryLock(LOCK_WAIT_MS);
+  if (!gotLock) {
+    return createJsonResponse({ success: false, message: "Таблица сейчас занята, попробуйте ещё раз через пару секунд." });
+  }
+
+  try {
+    var attachSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Прикрепление");
+    var agentBrand = String(data.agent || '').substring(0, 2).toUpperCase();
+
+    attachSheet.appendRow([
+      data.pointCode,
+      data.pointName,
+      agentBrand,
+      data.agent,
+      data.visitDay,
+      new Date()
+    ]);
+
+    return createJsonResponse({ success: true, message: "Точка успешно прикреплена к вам!" });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleAddTt(data) {
+  var lock = LockService.getScriptLock();
+  var gotLock = lock.tryLock(LOCK_WAIT_MS);
+  if (!gotLock) {
+    return createJsonResponse({ success: false, message: "Таблица сейчас занята, попробуйте ещё раз через пару секунд." });
+  }
+
+  try {
+    var addSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Добавление");
+
+    addSheet.appendRow([
+      data.clientName,
+      data.geo,          // Геометка (широта, долгота)
+      data.address,
+      data.phone,
+      data.inn,
+      data.region,
+      data.oblast,
+      data.okrug,
+      data.rayon,
+      data.format,
+      data.channel,
+      data.type,
+      data.category,
+      data.deliveryCode,
+      data.agent,
+      data.visitDay,
+      data.comments
+    ]);
+
+    return createJsonResponse({ success: true, message: "Новая торговая точка успешно добавлена!" });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ======================================================================
+// ХЕЛПЕРЫ: чтение/запись JSON в CacheService с разбивкой на части
+// (одно значение в CacheService ограничено ~100КБ, поэтому режем на куски)
+// ======================================================================
+
+function getCachedJson(key) {
+  var cache = CacheService.getScriptCache();
+  var countStr = cache.get(key + "_count");
+  if (!countStr) return null;
+
+  var count = parseInt(countStr, 10);
+  var parts = [];
+  for (var i = 0; i < count; i++) {
+    var part = cache.get(key + "_" + i);
+    if (part === null) return null; // частичный промах — считаем кэш невалидным
+    parts.push(part);
+  }
+
+  try {
+    return JSON.parse(parts.join(""));
+  } catch (e) {
+    return null;
+  }
+}
+
+function setCachedJson(key, obj, ttlSeconds) {
+  var cache = CacheService.getScriptCache();
+  var json = JSON.stringify(obj);
+  var chunkSize = 90000; // с запасом от лимита ~100КБ на значение
+
+  var parts = [];
+  for (var i = 0; i < json.length; i += chunkSize) {
+    parts.push(json.substring(i, i + chunkSize));
+  }
+
+  var values = {};
+  values[key + "_count"] = String(parts.length);
+  for (var j = 0; j < parts.length; j++) {
+    values[key + "_" + j] = parts[j];
+  }
+  cache.putAll(values, ttlSeconds);
+}
+
+// ======================================================================
+
+function createJsonResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
