@@ -10,6 +10,12 @@ class InnStates(StatesGroup):
     waiting_inn = State()
 
 
+class ChangePasswordStates(StatesGroup):
+    waiting_current = State()
+    waiting_new = State()
+    waiting_repeat = State()
+
+
 class AttachStates(StatesGroup):
     choosing_days = State()
     confirm = State()
