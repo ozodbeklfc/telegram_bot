@@ -26,7 +26,7 @@ STOPWORDS_REGEX = re.compile(r"\b(OOO|MCHJ|YATT|XK|ООО|МЧЖ|ЯТТ)\b")
 
 # Требования к новому паролю — можно менять здесь
 MIN_PASSWORD_LENGTH = 4
-MAX_PASSWORD_LENGTH = 8
+MAX_PASSWORD_LENGTH = 32
 
 
 def get_items_for(field: str, fsm_data: dict) -> list[str]:
@@ -117,6 +117,44 @@ async def cancel_handler(message: Message, state: FSMContext):
     else:
         await state.clear()
         await message.answer("Действие отменено. Наберите /start, чтобы начать заново.")
+
+
+# ======================================================================
+# СМЕНА ПАРОЛЯ: точка входа
+#
+# ВАЖНО: этот хендлер должен стоять ВЫШЕ хендлеров, привязанных к
+# состояниям (process_inn, add_address и т.д.). aiogram проверяет
+# хендлеры в порядке объявления, и хендлер состояния перехватил бы
+# команду как обычный текст — ровно так /change_password однажды
+# уехал в проверку ИНН.
+# ======================================================================
+
+@router.message(Command("change_password"))
+async def change_password_start(message: Message, state: FSMContext):
+    fsm_data = await state.get_data()
+    agent = fsm_data.get("agent")
+
+    if not agent:
+        await message.answer("🔒 Сначала войдите в систему — наберите /start.")
+        return
+
+    current_state = await state.get_state()
+    if current_state != InnStates.waiting_inn.state:
+        # Не даём начать смену пароля посреди заполнения формы, иначе
+        # весь введённый прогресс придётся выбрасывать.
+        await message.answer(
+            "⚠️ Сейчас идёт незавершённый сценарий.\n\n"
+            "Доведите его до конца или наберите /cancel, а затем повторите "
+            "/change_password."
+        )
+        return
+
+    await state.set_state(ChangePasswordStates.waiting_current)
+    await message.answer(
+        f"🔑 Смена пароля для агента {agent}.\n\n"
+        f"Введите ваш ТЕКУЩИЙ пароль:\n\n"
+        f"(/cancel — отменить)"
+    )
 
 
 # Порядок шагов для команды /back — по этим спискам ищем "предыдущий" шаг.
@@ -271,6 +309,7 @@ async def process_password(message: Message, state: FSMContext):
         await state.set_data({"agent": login_value.upper()})
         await checking_msg.edit_text(
             f"✅ Успешный вход!\n\n👤 Агент: {login_value}\n\n"
+            f"🔑 Сменить пароль — команда /change_password"
         )
         await delete_message_safe(message)  # убираем пароль из переписки
         await ask_inn(message, state)
@@ -778,36 +817,8 @@ async def attach_cancel(callback: CallbackQuery, state: FSMContext):
 
 
 # ======================================================================
-# СМЕНА ПАРОЛЯ: /change_password
+# СМЕНА ПАРОЛЯ: шаги сценария
 # ======================================================================
-
-@router.message(Command("change_password"))
-async def change_password_start(message: Message, state: FSMContext):
-    fsm_data = await state.get_data()
-    agent = fsm_data.get("agent")
-
-    if not agent:
-        await message.answer("🔒 Сначала войдите в систему — наберите /start.")
-        return
-
-    current_state = await state.get_state()
-    if current_state != InnStates.waiting_inn.state:
-        # Не даём начать смену пароля посреди заполнения формы, иначе
-        # весь введённый прогресс придётся выбрасывать.
-        await message.answer(
-            "⚠️ Сейчас идёт незавершённый сценарий.\n\n"
-            "Доведите его до конца или наберите /cancel, а затем повторите "
-            "/change_password."
-        )
-        return
-
-    await state.set_state(ChangePasswordStates.waiting_current)
-    await message.answer(
-        f"🔑 Смена пароля для агента {agent}.\n\n"
-        f"Введите ваш ТЕКУЩИЙ пароль:\n\n"
-        f"(/cancel — отменить)"
-    )
-
 
 @router.message(ChangePasswordStates.waiting_current, F.text)
 async def change_password_current(message: Message, state: FSMContext):
@@ -914,6 +925,10 @@ async def change_password_invalid(message: Message, state: FSMContext):
 
 def validate_new_password(password: str, current_password: str) -> str | None:
     """Возвращает текст ошибки или None, если пароль подходит."""
+    if password == current_password:
+        # Эта проверка идёт первой: если старый пароль короткий (например "a"),
+        # то при попытке оставить его же сообщение про длину только запутает.
+        return "Новый пароль совпадает со старым — придумайте другой."
     if len(password) < MIN_PASSWORD_LENGTH:
         return f"Слишком короткий пароль — минимум {MIN_PASSWORD_LENGTH} символа."
     if len(password) > MAX_PASSWORD_LENGTH:
@@ -922,8 +937,6 @@ def validate_new_password(password: str, current_password: str) -> str | None:
         return "Пароль не должен содержать пробелов."
     if password.startswith("/"):
         return "Пароль не может начинаться со знака «/» — так его примут за команду."
-    if password == current_password:
-        return "Новый пароль совпадает со старым — придумайте другой."
     return None
 
 
