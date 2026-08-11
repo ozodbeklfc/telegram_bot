@@ -26,7 +26,7 @@ STOPWORDS_REGEX = re.compile(r"\b(OOO|MCHJ|YATT|XK|ООО|МЧЖ|ЯТТ)\b")
 
 # Требования к новому паролю — можно менять здесь
 MIN_PASSWORD_LENGTH = 4
-MAX_PASSWORD_LENGTH = 32
+MAX_PASSWORD_LENGTH = 8
 
 
 def get_items_for(field: str, fsm_data: dict) -> list[str]:
@@ -271,7 +271,6 @@ async def process_password(message: Message, state: FSMContext):
         await state.set_data({"agent": login_value.upper()})
         await checking_msg.edit_text(
             f"✅ Успешный вход!\n\n👤 Агент: {login_value}\n\n"
-            f"🔑 Сменить пароль — команда /change_password"
         )
         await delete_message_safe(message)  # убираем пароль из переписки
         await ask_inn(message, state)
