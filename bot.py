@@ -7,11 +7,11 @@ from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    Message, CallbackQuery, ReplyKeyboardRemove, ReplyKeyboardMarkup,
+    Message, CallbackQuery, ReplyKeyboardRemove, ReplyKeyboardMarkup, BotCommand,
 )
 
 from config import BOT_TOKEN, ADMIN_ID
-from states import AuthStates, InnStates, AttachStates, AddStates
+from states import AuthStates, InnStates, AttachStates, AddStates, ChangePasswordStates
 import api
 import data
 from keyboards import build_paginated_keyboard, build_days_keyboard, confirm_keyboard
@@ -23,6 +23,10 @@ router = Router()
 INN_REGEX = re.compile(r"^\d{9}$|^\d{14}$")
 PHONE_REGEX = re.compile(r"^\+998\d{9}$")
 STOPWORDS_REGEX = re.compile(r"\b(OOO|MCHJ|YATT|XK|ООО|МЧЖ|ЯТТ)\b")
+
+# Требования к новому паролю — можно менять здесь
+MIN_PASSWORD_LENGTH = 4
+MAX_PASSWORD_LENGTH = 32
 
 
 def get_items_for(field: str, fsm_data: dict) -> list[str]:
@@ -67,6 +71,18 @@ async def safe_answer(callback: CallbackQuery, *args, **kwargs):
         await callback.answer(*args, **kwargs)
     except Exception:
         logging.warning("Не удалось ответить на callback (устарел) — игнорирую")
+
+
+async def delete_message_safe(message: Message):
+    """
+    Удаляет сообщение пользователя (используется для сообщений с паролями,
+    чтобы они не висели в истории чата). Если удалить не вышло — например,
+    прошло больше 48 часов или у бота нет прав — молча продолжаем работу.
+    """
+    try:
+        await message.delete()
+    except Exception:
+        logging.warning("Не удалось удалить сообщение с паролем — игнорирую")
 
 
 async def ask_inn(message: Message, state: FSMContext):
@@ -253,7 +269,11 @@ async def process_password(message: Message, state: FSMContext):
 
     if result.get("success"):
         await state.set_data({"agent": login_value.upper()})
-        await checking_msg.edit_text(f"✅ Успешный вход!\n\n👤 Агент: {login_value}")
+        await checking_msg.edit_text(
+            f"✅ Успешный вход!\n\n👤 Агент: {login_value}\n\n"
+            f"🔑 Сменить пароль — команда /change_password"
+        )
+        await delete_message_safe(message)  # убираем пароль из переписки
         await ask_inn(message, state)
     else:
         await state.set_state(AuthStates.waiting_login)
@@ -759,6 +779,156 @@ async def attach_cancel(callback: CallbackQuery, state: FSMContext):
 
 
 # ======================================================================
+# СМЕНА ПАРОЛЯ: /change_password
+# ======================================================================
+
+@router.message(Command("change_password"))
+async def change_password_start(message: Message, state: FSMContext):
+    fsm_data = await state.get_data()
+    agent = fsm_data.get("agent")
+
+    if not agent:
+        await message.answer("🔒 Сначала войдите в систему — наберите /start.")
+        return
+
+    current_state = await state.get_state()
+    if current_state != InnStates.waiting_inn.state:
+        # Не даём начать смену пароля посреди заполнения формы, иначе
+        # весь введённый прогресс придётся выбрасывать.
+        await message.answer(
+            "⚠️ Сейчас идёт незавершённый сценарий.\n\n"
+            "Доведите его до конца или наберите /cancel, а затем повторите "
+            "/change_password."
+        )
+        return
+
+    await state.set_state(ChangePasswordStates.waiting_current)
+    await message.answer(
+        f"🔑 Смена пароля для агента {agent}.\n\n"
+        f"Введите ваш ТЕКУЩИЙ пароль:\n\n"
+        f"(/cancel — отменить)"
+    )
+
+
+@router.message(ChangePasswordStates.waiting_current, F.text)
+async def change_password_current(message: Message, state: FSMContext):
+    current_password = message.text.strip()
+    fsm_data = await state.get_data()
+    agent = fsm_data.get("agent", "")
+
+    await delete_message_safe(message)
+
+    checking_msg = await message.answer("⏳ Проверяю текущий пароль...")
+    result = await api.login(agent.lower(), current_password)
+
+    if not result.get("success"):
+        await checking_msg.edit_text(
+            "❌ Текущий пароль неверный.\n\n"
+            "Введите его ещё раз или наберите /cancel:"
+        )
+        return
+
+    await state.update_data(current_password=current_password)
+    await state.set_state(ChangePasswordStates.waiting_new)
+    await checking_msg.edit_text(
+        f"✅ Пароль подтверждён.\n\n"
+        f"Введите НОВЫЙ пароль "
+        f"(от {MIN_PASSWORD_LENGTH} до {MAX_PASSWORD_LENGTH} символов, без пробелов):"
+    )
+
+
+@router.message(ChangePasswordStates.waiting_new, F.text)
+async def change_password_new(message: Message, state: FSMContext):
+    new_password = message.text.strip()
+    fsm_data = await state.get_data()
+
+    await delete_message_safe(message)
+
+    error = validate_new_password(new_password, fsm_data.get("current_password", ""))
+    if error:
+        await message.answer(f"⚠️ {error}\n\nВведите новый пароль ещё раз:")
+        return
+
+    await state.update_data(new_password=new_password)
+    await state.set_state(ChangePasswordStates.waiting_repeat)
+    await message.answer("Повторите новый пароль ещё раз для подтверждения:")
+
+
+@router.message(ChangePasswordStates.waiting_repeat, F.text)
+async def change_password_repeat(message: Message, state: FSMContext):
+    repeat = message.text.strip()
+    fsm_data = await state.get_data()
+
+    await delete_message_safe(message)
+
+    if repeat != fsm_data.get("new_password"):
+        await state.set_state(ChangePasswordStates.waiting_new)
+        await message.answer(
+            "❌ Пароли не совпадают.\n\nВведите новый пароль заново:"
+        )
+        return
+
+    agent = fsm_data.get("agent", "")
+    wait_msg = await message.answer("⏳ Сохраняю новый пароль...")
+
+    result = await api.change_password(
+        login_value=agent.lower(),
+        current_password=fsm_data.get("current_password", ""),
+        new_password=fsm_data.get("new_password", ""),
+    )
+
+    if result.get("success"):
+        await wait_msg.edit_text(
+            "✅ Пароль изменён.\n\n"
+            "В следующий раз входите с новым паролем — старый больше не работает."
+        )
+        if ADMIN_ID:
+            try:
+                # Сам пароль админу НЕ отправляем — только факт смены
+                await message.bot.send_message(
+                    ADMIN_ID, f"🔑 Агент {agent} сменил пароль."
+                )
+            except Exception:
+                logging.exception("Не удалось отправить уведомление админу")
+    else:
+        await wait_msg.edit_text(
+            f"❌ Не удалось сменить пароль: {result.get('message')}\n\n"
+            f"Пароль остался прежним, попробуйте позже — /change_password"
+        )
+
+    # В любом случае чистим временные пароли из состояния и возвращаемся к ИНН
+    await state.set_data({"agent": agent})
+    await ask_inn(message, state)
+
+
+@router.message(
+    StateFilter(
+        ChangePasswordStates.waiting_current,
+        ChangePasswordStates.waiting_new,
+        ChangePasswordStates.waiting_repeat,
+    )
+)
+async def change_password_invalid(message: Message, state: FSMContext):
+    """Пользователь прислал не текст (стикер, фото, голосовое) вместо пароля."""
+    await message.answer("⚠️ Пароль нужно ввести текстом. Попробуйте ещё раз или /cancel:")
+
+
+def validate_new_password(password: str, current_password: str) -> str | None:
+    """Возвращает текст ошибки или None, если пароль подходит."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Слишком короткий пароль — минимум {MIN_PASSWORD_LENGTH} символа."
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return f"Слишком длинный пароль — максимум {MAX_PASSWORD_LENGTH} символов."
+    if " " in password:
+        return "Пароль не должен содержать пробелов."
+    if password.startswith("/"):
+        return "Пароль не может начинаться со знака «/» — так его примут за команду."
+    if password == current_password:
+        return "Новый пароль совпадает со старым — придумайте другой."
+    return None
+
+
+# ======================================================================
 # MAIN
 # ======================================================================
 
@@ -766,6 +936,14 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
+
+    # Команды в меню Telegram (кнопка "/" рядом с полем ввода)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Начать заново / вход"),
+        BotCommand(command="cancel", description="Отменить текущий сценарий"),
+        BotCommand(command="back", description="Вернуться на шаг назад"),
+        BotCommand(command="change_password", description="Сменить пароль"),
+    ])
 
     await bot.delete_webhook(drop_pending_updates=True)
     try:

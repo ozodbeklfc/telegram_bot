@@ -29,7 +29,7 @@ def chunked(lst, size):
         yield lst[i:i + size]
 
 
-def migrate_users(conn, path: str = "users.csv"):
+def migrate_users(conn, path: str = "users_n.csv"):
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.reader(f)
         rows = list(reader)
