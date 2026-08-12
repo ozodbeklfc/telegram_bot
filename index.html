@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FirstG — Управление ТТ</title>
+    <!-- Карта для выбора геометки (бесплатная, без ключей и регистрации) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <style>
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background-color: #f4f7f6; padding: 15px; margin: 0; color: #333; }
@@ -21,6 +24,35 @@
         input:focus, select:focus, textarea:focus { border-color: #0056b3; }
         
         /* Стили для выпадающих списков с фильтрацией (Autocomplete) */
+        /* Модальное окно с картой */
+        .map-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.55);
+            z-index: 1000;
+            padding: 12px;
+        }
+        .map-overlay.active { display: flex; align-items: center; justify-content: center; }
+        .map-box {
+            background: #fff;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 560px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            max-height: 92vh;
+        }
+        .map-box h3 { margin: 0; padding: 14px 16px 6px; font-size: 17px; }
+        .map-hint { padding: 0 16px 10px; font-size: 13px; color: #666; line-height: 1.35; }
+        #map { width: 100%; flex: 1; min-height: 320px; }
+        .map-actions { display: flex; gap: 10px; padding: 12px; }
+        .map-actions button { flex: 1; padding: 12px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
+        .map-confirm { background: #28a745; color: #fff; }
+        .map-cancel { background: #e9ecef; color: #333; }
+        .map-coords { text-align: center; font-size: 13px; color: #0056b3; padding: 6px 12px 0; font-weight: 600; }
+
         .autocomplete-items {
             position: absolute;
             border: 1px solid #ccc;
@@ -115,6 +147,20 @@
 
             <button type="submit" id="inn-btn" class="btn-submit">Проверить точку</button>
         </form>
+    </div>
+
+    <!-- ОКНО ВЫБОРА ТОЧКИ НА КАРТЕ -->
+    <div id="map-overlay" class="map-overlay">
+        <div class="map-box">
+            <h3>Выберите точку на карте</h3>
+            <div class="map-hint">Перетащите булавку или коснитесь нужного места. Быть на точке физически не обязательно.</div>
+            <div id="map"></div>
+            <div class="map-coords" id="map-coords">—</div>
+            <div class="map-actions">
+                <button type="button" class="map-cancel" id="map-cancel">Отмена</button>
+                <button type="button" class="map-confirm" id="map-confirm">Подтвердить</button>
+            </div>
+        </div>
     </div>
 
     <!-- ЭКРАН СМЕНЫ ПАРОЛЯ -->
@@ -229,8 +275,12 @@
                            style="background-color: #e9ecef;" autocomplete="off">
                 </div>
             </div>
-            <button type="button" id="geo-btn" class="btn-submit"
-                    style="background:#0056b3; margin-bottom:10px;">📍 Определить геометку</button>
+            <div style="display:flex; gap:10px; margin-bottom:10px;">
+                <button type="button" id="geo-btn" class="btn-submit"
+                        style="background:#0056b3; margin:0; flex:1;">📍 Я на точке</button>
+                <button type="button" id="map-btn" class="btn-submit"
+                        style="background:#6c3fb5; margin:0; flex:1;">🗺 Выбрать на карте</button>
+            </div>
             <div id="geo-status" class="status-message"></div>
 
             <div class="section-title">2. Локация и Классификация (введите для поиска)</div>
@@ -883,7 +933,7 @@
                 field.value = pos.coords.latitude.toFixed(6) + ', ' + pos.coords.longitude.toFixed(6);
                 show("Геометка определена.", true);
                 btn.disabled = false;
-                btn.textContent = '📍 Определить заново';
+                btn.textContent = '📍 Я на точке';
             },
             function(err) {
                 let msg = "Не удалось определить местоположение.";
@@ -891,11 +941,98 @@
                 else if (err.code === 3) msg = "Определение заняло слишком много времени. Попробуйте ещё раз.";
                 show(msg, false);
                 btn.disabled = false;
-                btn.textContent = '📍 Определить геометку';
+                btn.textContent = '📍 Я на точке';
             },
             // Высокая точность важна: точку нужно найти на карте, а не приблизительно
             { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
         );
+    });
+
+    // ---------- ВЫБОР ТОЧКИ НА КАРТЕ ----------
+    // По умолчанию — центр Ташкента, если ничего другого не известно
+    const MAP_DEFAULT = [41.311081, 69.240562];
+
+    let mapInstance = null;
+    let mapMarker = null;
+
+    function updateMapCoords(latlng) {
+        document.getElementById('map-coords').textContent =
+            latlng.lat.toFixed(6) + ', ' + latlng.lng.toFixed(6);
+    }
+
+    function openMap() {
+        const overlay = document.getElementById('map-overlay');
+        overlay.classList.add('active');
+
+        // Стартовая точка: уже выбранная геометка → иначе центр по умолчанию
+        let start = MAP_DEFAULT;
+        const current = document.getElementById('geo').value.trim();
+        if (current) {
+            const parts = current.split(',').map(x => parseFloat(x.trim()));
+            if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) start = parts;
+        }
+
+        if (!mapInstance) {
+            mapInstance = L.map('map').setView(start, 16);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '© OpenStreetMap'
+            }).addTo(mapInstance);
+
+            mapMarker = L.marker(start, { draggable: true }).addTo(mapInstance);
+            mapMarker.on('drag', e => updateMapCoords(e.target.getLatLng()));
+
+            // Касание по карте тоже переставляет булавку — так удобнее на телефоне
+            mapInstance.on('click', e => {
+                mapMarker.setLatLng(e.latlng);
+                updateMapCoords(e.latlng);
+            });
+        } else {
+            mapInstance.setView(start, 16);
+            mapMarker.setLatLng(start);
+        }
+
+        updateMapCoords({ lat: start[0], lng: start[1] });
+
+        // Карта инициализируется в скрытом блоке и не знает своих размеров —
+        // без этого вызова вместо тайлов будет серый прямоугольник
+        setTimeout(() => mapInstance.invalidateSize(), 150);
+
+        // Если геометки ещё нет — подтягиваем текущее положение как стартовое
+        if (!current && navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(function(pos) {
+                const here = [pos.coords.latitude, pos.coords.longitude];
+                mapInstance.setView(here, 16);
+                mapMarker.setLatLng(here);
+                updateMapCoords({ lat: here[0], lng: here[1] });
+            }, function() { /* отказали в доступе — оставляем точку по умолчанию */ },
+            { enableHighAccuracy: true, timeout: 10000 });
+        }
+    }
+
+    function closeMap() {
+        document.getElementById('map-overlay').classList.remove('active');
+    }
+
+    document.getElementById('map-btn').addEventListener('click', openMap);
+    document.getElementById('map-cancel').addEventListener('click', closeMap);
+
+    document.getElementById('map-confirm').addEventListener('click', function() {
+        const pos = mapMarker.getLatLng();
+        document.getElementById('geo').value = pos.lat.toFixed(6) + ', ' + pos.lng.toFixed(6);
+
+        const status = document.getElementById('geo-status');
+        status.className = 'status-message success';
+        status.textContent = "Геометка выбрана на карте.";
+        status.style.display = 'block';
+
+        document.getElementById('geo-btn').textContent = '📍 Я на точке';
+        closeMap();
+    });
+
+    // Клик по затемнению вокруг окна — закрыть
+    document.getElementById('map-overlay').addEventListener('click', function(e) {
+        if (e.target === this) closeMap();
     });
 
     // ---------- АДРЕС ЗАГЛАВНЫМИ ----------
