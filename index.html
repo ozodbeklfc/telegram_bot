@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FirstG — Управление ТТ</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background-color: #f4f7f6; padding: 15px; margin: 0; color: #333; }
+        .form-container { max-width: 500px; margin: 0 auto; background: #fff; padding: 25px 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+        h2 { text-align: center; color: #1a1a1a; margin-top: 0; margin-bottom: 8px; font-size: 22px; font-weight: 700; }
+        .subtitle { text-align: center; color: #666; margin-bottom: 20px; font-size: 14px; line-height: 1.4; }
+        .section-title { font-size: 1.05em; font-weight: bold; color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px; margin-bottom: 15px; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        
+        @media (max-width: 480px) { .grid-2 { grid-template-columns: 1fr; } }
+
+        .form-group { margin-bottom: 15px; position: relative; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 13px; color: #444; }
+        input, select, textarea { width: 100%; padding: 11px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; outline: none; }
+        input:focus, select:focus, textarea:focus { border-color: #0056b3; }
+        
+        /* Стили для выпадающих списков с фильтрацией (Autocomplete) */
+        .autocomplete-items {
+            position: absolute;
+            border: 1px solid #ccc;
+            border-top: none;
+            border-bottom-left-radius: 6px;
+            border-bottom-right-radius: 6px;
+            z-index: 99;
+            top: 100%;
+            left: 0;
+            right: 0;
+            max-height: 160px;
+            overflow-y: auto;
+            background-color: #fff;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .autocomplete-items div {
+            padding: 10px;
+            cursor: pointer;
+            font-size: 14px;
+            border-bottom: 1px solid #f1f1f1;
+        }
+        .autocomplete-items div:hover {
+            background-color: #eef5ff;
+            color: #0056b3;
+        }
+
+        .btn-submit { background-color: #28a745; color: white; border: none; padding: 13px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; width: 100%; margin-top: 10px; }
+        .btn-submit:hover { background-color: #218838; }
+        .btn-submit:disabled { background-color: #a5d6a7; cursor: not-allowed; }
+        
+        .btn-back { background-color: transparent; color: #0056b3; border: 1px solid #0056b3; padding: 6px 12px; font-size: 13px; border-radius: 4px; cursor: pointer; margin-bottom: 15px; font-weight: 600; }
+
+        .user-bar { background: #eef5ff; border: 1px solid #cce5ff; padding: 10px 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; color: #004085; margin-bottom: 20px; }
+        .btn-logout { background: none; border: none; color: #dc3545; cursor: pointer; font-size: 12px; text-decoration: underline; padding: 0; }
+
+        .screen { display: none; }
+        .screen.active { display: block; }
+
+        .status-message { font-size: 13px; text-align: center; margin-top: 10px; margin-bottom: 10px; font-weight: 600; display: none; padding: 8px; border-radius: 4px; }
+        .status-message.error { color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
+        .status-message.success { color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
+        
+        .loader { display: none; text-align: center; margin-top: 10px; font-size: 13px; color: #0056b3; font-weight: 600; }
+    </style>
+</head>
+<body>
+
+<div class="form-container">
+
+    <!-- 1. ЭКРАН АВТОРИЗАЦИИ -->
+    <div id="screen-auth" class="screen active">
+        <h2>Вход в систему</h2>
+        <p class="subtitle">Введите ваш логин торгового представителя и пароль</p>
+        
+        <form id="auth-form">
+            <div class="form-group">
+                <label for="loginAgent">Логин агента*</label>
+                <input type="text" id="loginAgent" required placeholder="Например: OR0111">
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">Пароль*</label>
+                <input type="password" id="loginPassword" required placeholder="••••••••">
+            </div>
+            
+            <div id="auth-status" class="status-message"></div>
+            <div id="loader" class="loader">⏳ Проверка логина...</div>
+
+            <button type="submit" id="auth-btn" class="btn-submit">Войти в систему</button>
+        </form>
+    </div>
+
+    <!-- 2. ЭКРАН ПРОВЕРКИ ИНН -->
+    <div id="screen-inn-check" class="screen">
+        <div class="user-bar">
+            <span>👤 <span id="display-user">OR0111</span></span>
+            <button class="btn-logout" onclick="logout()">Выйти</button>
+        </div>
+
+        <h2>Проверка базы данных</h2>
+        <p class="subtitle">Введите ИНН (строго 9 или 14 цифр)</p>
+        
+        <form id="inn-form">
+            <div class="form-group">
+                <input type="text" id="checkInnInput" required placeholder="9 или 14 цифр" style="text-align: center; font-size: 16px;">
+            </div>
+            
+            <div id="inn-status" class="status-message"></div>
+            <div id="inn-loader" class="loader">⏳ Ищем точку в базе...</div>
+
+            <button type="submit" id="inn-btn" class="btn-submit">Проверить точку</button>
+        </form>
+    </div>
+
+    <!-- 3. ЭКРАН ПРИКРЕПЛЕНИЯ -->
+    <div id="screen-attach" class="screen">
+        <button type="button" class="btn-back" onclick="showScreen('screen-inn-check')">← Назад к ИНН</button>
+        <h2>Прикрепление торговой точки</h2>
+        <p class="subtitle">Точка найдена в базе. Агент: <strong id="attach-agent-label">OR0111</strong></p>
+        
+        <form id="attach-form">
+            <div class="form-group">
+                <label for="attachPointName">Название точки</label>
+                <input type="text" id="attachPointName" required readonly style="background-color: #e9ecef;">
+                <input type="text" id="attachPointCode">
+            </div>
+
+            <div class="form-group">
+                <label for="attachDay1">День визита 1*</label>
+                <select id="attachDay1" required>
+                    <option value="" disabled selected>Выберите день недели</option>
+                    <option value="Понедельник">Понедельник</option>
+                    <option value="Вторник">Вторник</option>
+                    <option value="Среда">Среда</option>
+                    <option value="Четверг">Четверг</option>
+                    <option value="Пятница">Пятница</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="attachDay2-group" style="display:none;">
+                <label for="attachDay2">День визита 2 (необязательно)</label>
+                <select id="attachDay2">
+                    <option value="">Не выбрано</option>
+                    <option value="Понедельник">Понедельник</option>
+                    <option value="Вторник">Вторник</option>
+                    <option value="Среда">Среда</option>
+                    <option value="Четверг">Четверг</option>
+                    <option value="Пятница">Пятница</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="attachDay3-group" style="display:none;">
+                <label for="attachDay3">День визита 3 (необязательно)</label>
+                <select id="attachDay3">
+                    <option value="">Не выбрано</option>
+                    <option value="Понедельник">Понедельник</option>
+                    <option value="Вторник">Вторник</option>
+                    <option value="Среда">Среда</option>
+                    <option value="Четверг">Четверг</option>
+                    <option value="Пятница">Пятница</option>
+                </select>
+            </div>
+
+            <button type="submit" id="attach-btn" class="btn-submit">Прикрепить точку</button>
+        </form>
+    </div>
+
+    <!-- 4. ЭКРАН ДОБАВЛЕНИЯ -->
+    <div id="screen-add" class="screen">
+        <button type="button" class="btn-back" onclick="showScreen('screen-inn-check')">← Назад к ИНН</button>
+        <h2>Регистрация новой ТТ</h2>
+        <p class="subtitle">Точка с таким ИНН не найдена. Заполните данные.</p>
+        
+        <form id="tt-form">
+            <div class="section-title">1. Основная информация</div>
+            <div class="form-group">
+                <label for="clientName">Название Клиента (строго латиница)*</label>
+                <input type="text" id="clientName" required placeholder="НАПРИМЕР: SUPERMARKET MAX">
+            </div>
+            
+            <div class="grid-2">
+                <div class="form-group">
+                    <label for="address">Фактический адрес доставки*</label>
+                    <input type="text" id="address" required placeholder="МКР. 1, ДОМ 2">
+                </div>
+                <div class="form-group">
+                    <label for="phone">Номер телефона*</label>
+                    <input type="tel" id="phone" required placeholder="+998901234567">
+                </div>
+                <div class="form-group">
+                    <label for="inn">ИНН (9 или 14 цифр)*</label>
+                    <input type="text" id="inn" required readonly style="background-color: #e9ecef;">
+                </div>
+            </div>
+
+            <div class="section-title">2. Локация и Классификация (введите для поиска)</div>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label for="region">Регион*</label>
+                    <input type="text" id="region" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group">
+                    <label for="oblast">Область*</label>
+                    <input type="text" id="oblast" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group">
+                    <label for="okrug">Округ*</label>
+                    <input type="text" id="okrug" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group">
+                    <label for="rayon">Район*</label>
+                    <input type="text" id="rayon" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group">
+                    <label for="format">Формат*</label>
+                    <input type="text" id="format" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group">
+                    <label for="channel">Канал*</label>
+                    <input type="text" id="channel" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group">
+                    <label for="type">Тип*</label>
+                    <input type="text" id="type" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group">
+                    <label for="category">Категория*</label>
+                    <input type="text" id="category" required placeholder="Начните ввод...">
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                    <label for="deliveryCode">Код доставщика*</label>
+                    <input type="text" id="deliveryCode" required placeholder="Введите код доставщика">
+                </div>
+            </div>
+
+            <div class="section-title">3. Закрепление торгового представителя</div>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label for="agentLogin">Логин агента*</label>
+                    <input type="text" id="agentLogin" readonly style="background-color: #e9ecef;">
+                </div>
+                <div class="form-group">
+                    <label for="visitDay1">День визита 1*</label>
+                    <select id="visitDay1" required>
+                        <option value="" disabled selected>Выберите день</option>
+                        <option value="Понедельник">Понедельник</option>
+                        <option value="Вторник">Вторник</option>
+                        <option value="Среда">Среда</option>
+                        <option value="Четверг">Четверг</option>
+                        <option value="Пятница">Пятница</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group" id="visitDay2-group" style="display:none;">
+                <label for="visitDay2">День визита 2 (необязательно)</label>
+                <select id="visitDay2">
+                    <option value="">Не выбрано</option>
+                    <option value="Понедельник">Понедельник</option>
+                    <option value="Вторник">Вторник</option>
+                    <option value="Среда">Среда</option>
+                    <option value="Четверг">Четверг</option>
+                    <option value="Пятница">Пятница</option>
+                </select>
+            </div>
+
+            <div class="form-group" id="visitDay3-group" style="display:none;">
+                <label for="visitDay3">День визита 3 (необязательно)</label>
+                <select id="visitDay3">
+                    <option value="">Не выбрано</option>
+                    <option value="Понедельник">Понедельник</option>
+                    <option value="Вторник">Вторник</option>
+                    <option value="Среда">Среда</option>
+                    <option value="Четверг">Четверг</option>
+                    <option value="Пятница">Пятница</option>
+                </select>
+            </div>
+
+                <div class="section-title">4. Дополнительно</div>
+                <div class="form-group">
+                    <label for="comments">Комментарии</label>
+                    <textarea id="comments" rows="3" placeholder="Введите комментарий..."></textarea>
+                </div>
+
+                <button type="submit" id="add-btn" class="btn-submit">Сохранить новую точку</button>
+        </form>
+    </div>
+
+</div>
+
+<script>
+    // Адрес бэкенда. Раньше здесь был Google Apps Script, теперь — свой
+    // сервис на Railway, который ходит напрямую в Postgres.
+    //
+    // Если сайт лежит рядом с ботом (открывается по тому же адресу) — оставь
+    // "/" как есть, запросы уйдут на тот же домен.
+    // Если сайт размещён отдельно (GitHub Pages, Netlify и т.п.) — впиши сюда
+    // публичный адрес сервиса бота, например:
+    //   const WEB_APP_URL = "https://telegram-bot-production-xxxx.up.railway.app/";
+    const WEB_APP_URL = "/";
+
+    // Справочники с привязкой по регионам и областям
+    const dropdownData = {
+        region: ["FV", "SOUTH-WEST", "TASHKENT", "TASH-OBL"],
+        oblast: {
+            "FV": ["FARGONA VILOYATI", "NAMANGAN VILOYATI", "ANDIJON VILOYATI"],
+            "SOUTH-WEST": ["BUXORO VILOYATI", "JIZZAX VILOYATI", "NAVOIY VILOYATI", "QASHQADARYO VILOYATI", "QORAQALPOQISTON", "SAMARQAND VILOYATI",  "SURXANDARYO VILOYATI", "XORAZM VILOYATI"],
+            "TASHKENT": ["TASHKENT"],
+            "TASH-OBL": ["TOSHKENT VILOYATI", "SIRDARYO VILOYATI"]
+        },
+        okrug: {
+            "TASHKENT": ["BEKTEMIR", "CHILONZOR", "YASHNOBOD", "MIROBOD", "MIRZO ULUGBEK", "SERGELI", "SHAYXONTOXUR", "OLMAZOR", "UCHTEPA", "YAKKASAROY", "YUNUSOBOD", "YANGIHAYOT", "ASKIYA BOZOR", "ECO BOZOR", "FOOD CITY BOZOR", "GVARDEYSKIY BOZOR", "KADISHEVA BOZOR", "MIROBOD BOZOR", "OLOY BOZOR", "QATORTOL BOZOR", "QOYLIQ BOZOR", "SAMPI BOZOR/UNIVERSAM BOZOR", "URIKZOR BOZOR", "VODIY BOZOR", "IPPODROM BOZOR"],
+            "TOSHKENT VILOYATI": ["BEKOBOD", "BOKA", "BOSTONLIQ", "ZANGIOTA", "OQQORGON", "OHANGARON", "PARKENT", "PISKENT", "CHIRCHIQ", "YANGIYOL", "CHINOZ", "QIBRAY"],
+            "SIRDARYO VILOYATI": ["GULISTON", "OQOLTIN", "BOYOVUT", "XOVOS", "MIRZAOBOD", "SARDOBA", "SAYXUNOBOD", "SIRDARYO"],
+            "JIZZAX VILOYATI": ["JIZZAKH", "ARNASOY", "BAXMAL", "DOSTLIK", "FORISH", "GALLAOROL", "SHAROF RASHIDOV", "MIRZACHOL", "PAXTAKOR", "YANGIOBOD", "ZOMIN", "ZAFAROBOD", "ZARBDOR"],
+            "SAMARQAND VILOYATI": ["SAMARQAND", "BULUNGUR", "ISHTIXON", "JOMBOY", "KATTAQORGON", "QOSHRABOT", "NARPAY", "NUROBOD", "OQDARYO", "PAXTACHI", "PAYARIQ", "PASTDARGOM", "TOYLOQ", "URGUT"],
+            "NAVOIY VILOYATI": ["NAVOIY", "KONIMEX", "QIZILTEPA", "XATIRCHI", "NAVBAHOR", "KARMANA", "NUROTA", "ZARAFSHAN", "TOMDI", "UCHQUDUQ"],
+            "BUXORO VILOYATI": ["BUXORO", "OLOT", "GIJDUVON", "JONDOR", "KOGON", "QORAKOL", "QOROVULBOZOR", "PESHKU", "ROMITAN", "SHOFIRKON", "VOBKENT"],
+            "QASHQADARYO VILOYATI": ["QARSHI", "DEHQONOBOD", "GUZOR", "KOSON", "KASBI", "MIRISHKOR", "MUBORAK", "NISHON", "SHAHRISABZ", "CHIROQCHI", "QAMASHI", "KITOB", "YAKKABOG", "KOKDALA"],
+            "SURXANDARYO VILOYATI": ["TERMIZ", "ANGOR", "BANDIXON", "JARQORGON", "QIZIRIQ", "MUZRABOT", "SHEROBOD", "DENOV", "BOYSUN", "QUMQORGON", "OLTINSOY", "SARIOSIYO", "SHORCHI", "UZUN"],
+            "XORAZM VILOYATI": ["URGANCH", "XIVA", "BOGOT", "GURLAN", "XONQA", "HAZORASP", "QOSHKOPIR", "SHOVOT", "YANGIARIQ", "YANGIBOZOR", "TUPROQQALA"],
+            "QORAQALPOQISTON": ["NUKUS", "AMUDARYO", "BERUNIY", "CHIMBOY", "ELLIKQALA", "KEGEYLI", "MOYNOQ", "QANLIKOL", "QONGIROT", "QORAOZAK", "SHUMANAY", "TAXTAKOPIR", "TORTKOL", "XOJAYLI", "TAXIATOSH", "BOZATOV"],
+            "NAMANGAN VILOYATI": ["NAMANGAN", "CHORTOQ", "CHUST", "KOSONSOY", "MINGBULOQ", "NORIN", "POP", "TORAQORGON", "UCHQORGON", "UYCHI", "YANGIQORGON"],
+            "FARGONA VILOYATI": ["FARGONA", "OLTIARIQ", "QOSHTEPA", "QUVA", "SOX", "TOSHLOQ", "YOZYOVON", "QOQAND", "BAGDOD", "BESHARIQ", "BUVAYDA", "DANGARA", "FURQAT", "RISHTON", "UCHKOPRIK", "OZBEKISTON"],
+            "ANDIJON VILOYATI": ["ANDIJON", "ASAKA", "BALIQCHI", "BOSTON", "BULOQBOSHI", "IZBOSKAN", "JALAQUDUQ", "XOJAOBOD", "QORGONTEPA", "MARHAMAT", "OLTINKOL", "PAXTAOBOD", "SHAHRIXON", "ULUGNOR"]
+        },
+        rayon: {
+            "TASHKENT": ["BEKTEMIR", "CHILONZOR", "YASHNOBOD", "MIROBOD", "MIRZO ULUGBEK", "SERGELI", "SHAYXONTOXUR", "OLMAZOR", "UCHTEPA", "YAKKASAROY", "YUNUSOBOD", "YANGIHAYOT", "ASKIYA BOZOR", "ECO BOZOR", "FOOD CITY BOZOR", "GVARDEYSKIY BOZOR", "KADISHEVA BOZOR", "MIROBOD BOZOR", "OLOY BOZOR", "QATORTOL BOZOR", "QOYLIQ BOZOR", "SAMPI BOZOR/UNIVERSAM BOZOR", "URIKZOR BOZOR", "VODIY BOZOR", "IPPODROM BOZOR"],
+            "TOSHKENT VILOYATI": ["BEKOBOD", "BOKA", "BOSTONLIQ", "ZANGIOTA", "OQQORGON", "OHANGARON", "PARKENT", "PISKENT", "CHIRCHIQ", "YANGIYOL", "CHINOZ", "QIBRAY"],
+            "SIRDARYO VILOYATI": ["GULISTON", "OQOLTIN", "BOYOVUT", "XOVOS", "MIRZAOBOD", "SARDOBA", "SAYXUNOBOD", "SIRDARYO"],
+            "JIZZAX VILOYATI": ["JIZZAKH", "ARNASOY", "BAXMAL", "DOSTLIK", "FORISH", "GALLAOROL", "SHAROF RASHIDOV", "MIRZACHOL", "PAXTAKOR", "YANGIOBOD", "ZOMIN", "ZAFAROBOD", "ZARBDOR"],
+            "SAMARQAND VILOYATI": ["SAMARQAND", "BULUNGUR", "ISHTIXON", "JOMBOY", "KATTAQORGON", "QOSHRABOT", "NARPAY", "NUROBOD", "OQDARYO", "PAXTACHI", "PAYARIQ", "PASTDARGOM", "TOYLOQ", "URGUT"],
+            "NAVOIY VILOYATI": ["NAVOIY", "KONIMEX", "QIZILTEPA", "XATIRCHI", "NAVBAHOR", "KARMANA", "NUROTA", "ZARAFSHAN", "TOMDI", "UCHQUDUQ"],
+            "BUXORO VILOYATI": ["BUXORO", "OLOT", "GIJDUVON", "JONDOR", "KOGON", "QORAKOL", "QOROVULBOZOR", "PESHKU", "ROMITAN", "SHOFIRKON", "VOBKENT"],
+            "QASHQADARYO VILOYATI": ["QARSHI", "DEHQONOBOD", "GUZOR", "KOSON", "KASBI", "MIRISHKOR", "MUBORAK", "NISHON", "SHAHRISABZ", "CHIROQCHI", "QAMASHI", "KITOB", "YAKKABOG", "KOKDALA"],
+            "SURXANDARYO VILOYATI": ["TERMIZ", "ANGOR", "BANDIXON", "JARQORGON", "QIZIRIQ", "MUZRABOT", "SHEROBOD", "DENOV", "BOYSUN", "QUMQORGON", "OLTINSOY", "SARIOSIYO", "SHORCHI", "UZUN"],
+            "XORAZM VILOYATI": ["URGANCH", "XIVA", "BOGOT", "GURLAN", "XONQA", "HAZORASP", "QOSHKOPIR", "SHOVOT", "YANGIARIQ", "YANGIBOZOR", "TUPROQQALA"],
+            "QORAQALPOQISTON": ["NUKUS", "AMUDARYO", "BERUNIY", "CHIMBOY", "ELLIKQALA", "KEGEYLI", "MOYNOQ", "QANLIKOL", "QONGIROT", "QORAOZAK", "SHUMANAY", "TAXTAKOPIR", "TORTKOL", "XOJAYLI", "TAXIATOSH", "BOZATOV"],
+            "NAMANGAN VILOYATI": ["NAMANGAN", "CHORTOQ", "CHUST", "KOSONSOY", "MINGBULOQ", "NORIN", "POP", "TORAQORGON", "UCHQORGON", "UYCHI", "YANGIQORGON"],
+            "FARGONA VILOYATI": ["FARGONA", "OLTIARIQ", "QOSHTEPA", "QUVA", "SOX", "TOSHLOQ", "YOZYOVON", "QOQAND", "BAGDOD", "BESHARIQ", "BUVAYDA", "DANGARA", "FURQAT", "RISHTON", "UCHKOPRIK", "OZBEKISTON"],
+            "ANDIJON VILOYATI": ["ANDIJON", "ASAKA", "BALIQCHI", "BOSTON", "BULOQBOSHI", "IZBOSKAN", "JALAQUDUQ", "XOJAOBOD", "QORGONTEPA", "MARHAMAT", "OLTINKOL", "PAXTAOBOD", "SHAHRIXON", "ULUGNOR"]
+        },
+        format: ["Chain", "Drogery", "Hotels", "OP.Markets", "Others", "Perfumery", "Pharmacy", "Super M.", "Superettes", "Web Sales"],
+        channel: ["B.SALOONS", "HORECA", "MOD.TRADE", "TRAD TRADE", "WHOLESALE"],
+        type: ["FOOD", "FOOD-HPC", "HPC"],
+        category: ["A", "B", "C", "D"],
+        deliveryCode: {
+            "TASHKENT": ["D2-TOP1", "D3-TOP2", "D4-YNSBD-1", "D5-SHAYXTR", "D6-OLMAZR", "D7-CLNZR1", "D8-YNSBD-2", "D9-M.ULU1", "D10-UCHTEP", "D11-MIR.YK", "D12-CLNZR2", "D13-YASHNB", "D14-SRGILI", "D15-M.ULU2", "D16-CHRQ", "D17-CHRQ-1", "D18-CHRQ-2", "D19-OSDO-1", "D20-OSDO-2", "D21-OSDO-3", "D22-YANG-1", "D23-YANG-2", "D24-BEKBOD", "D25-ANG.OX", "D26-OLMALQ", "K1-KA", "K3-KA", "K5-KA"],
+            "TOSHKENT VILOYATI": ["D2-TOP1", "D3-TOP2", "D4-YNSBD-1", "D5-SHAYXTR", "D6-OLMAZR", "D7-CLNZR1", "D8-YNSBD-2", "D9-M.ULU1", "D10-UCHTEP", "D11-MIR.YK", "D12-CLNZR2", "D13-YASHNB", "D14-SRGILI", "D15-M.ULU2", "D16-CHRQ", "D17-CHRQ-1", "D18-CHRQ-2", "D19-OSDO-1", "D20-OSDO-2", "D21-OSDO-3", "D22-YANG-1", "D23-YANG-2", "D24-BEKBOD", "D25-ANG.OX", "D26-OLMALQ", "K1-KA", "K3-KA", "K5-KA"],
+            "SAMARQAND VILOYATI": ["SAM-D1", "SAM-D3", "SAM-D4", "SAM-D5", "SAM-D6", "SAM-D8", "SAM-D7"],
+            "BUXORO VILOYATI": ["BUX-D3", "BUX-D6", "BUX-D4", "BUX-D2", "BUX-D5", "BUX-D7", "BUX-D1"],
+            "NAVOIY VILOYATI": ["NAV-D2", "NAV-D1", "NAV-D3", "NAV-D4"],
+            "JIZZAX VILOYATI": ["JIZ-D2", "JIZ-D3", "JIZ-D1"],
+            "SURXANDARYO VILOYATI": ["TER-D1", "TER-DJ", "TER-D2"],
+            "QASHQADARYO VILOYATI": ["QAR-D3", "QAR-D1", "QAR-D2", "QAR-D4", "SHAH-D2", "SHAH-D1"],
+            "XORAZM VILOYATI": ["XOR-D4", "XOR-D2", "XOR-D5", "XOR-D3", "XOR-D1", "XOR-D6"],
+            "QORAQALPOQISTON": ["NUK-D3", "NUK-D2", "NUK-D1"],
+            "FARGONA VILOYATI": ["FAR-D1", "FAR-D2", "FAR-D3", "FAR-D4", "FAR-D5","QOQ-D1", "QOQ-D2", "QOQ-D3", "QOQ-D4", "QOQ-D5"],
+            "ANDIJON VILOYATI": ["AND-D1", "AND-D2", "AND-D3", "AND-D4", "AND-D5"],
+            "NAMANGAN VILOYATI": ["NAM-D1", "NAM-D2", "NAM-D3", "NAM-D4", "NAM-D5"],
+            "DEFAULT": ["DLV-101", "DLV-102", "DLV-103"]
+        }
+    };
+
+    // Корректная функция получения данных с учетом зависимости полей
+    function getFilteredData(fieldKey) {
+        const data = dropdownData[fieldKey];
+        if (Array.isArray(data)) return data;
+
+        if (typeof data === 'object' && data !== null) {
+            let parentValue = "";
+
+            if (fieldKey === 'oblast') {
+                parentValue = document.getElementById('region').value.trim();
+            } else if (['okrug', 'rayon', 'deliveryCode'].includes(fieldKey)) {
+                parentValue = document.getElementById('oblast').value.trim();
+            }
+
+            if (parentValue && data[parentValue]) {
+                return data[parentValue];
+            }
+            return data["DEFAULT"] || [];
+        }
+        return [];
+    }
+
+    // Автодополнение с точным рендерингом и обработкой кликов
+    function setupAutocomplete(inputId, fieldKey) {
+        const input = document.getElementById(inputId);
+
+        function renderList(filterText = '') {
+            closeAllLists();
+            const currentArr = getFilteredData(fieldKey);
+            if (!currentArr || !currentArr.length) return;
+
+            const listContainer = document.createElement('DIV');
+            listContainer.setAttribute('id', inputId + '-autocomplete-list');
+            listContainer.setAttribute('class', 'autocomplete-items');
+            input.parentNode.appendChild(listContainer);
+
+            currentArr.forEach(item => {
+                const itemStr = String(item);
+                if (!filterText || itemStr.toUpperCase().includes(filterText.toUpperCase())) {
+                    const itemDiv = document.createElement('DIV');
+
+                    if (filterText) {
+                        const regex = new RegExp('(' + filterText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+                        itemDiv.innerHTML = itemStr.replace(regex, '<strong>$1</strong>');
+                    } else {
+                        itemDiv.textContent = itemStr;
+                    }
+
+                    // Используем mousedown, чтобы выбор срабатывал до потери фокуса
+                    itemDiv.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        input.value = itemStr;
+                        closeAllLists();
+
+                        // Очищаем зависимые поля при смене значений
+                        if (fieldKey === 'region') {
+                            document.getElementById('oblast').value = '';
+                            document.getElementById('okrug').value = '';
+                            document.getElementById('rayon').value = '';
+                            document.getElementById('deliveryCode').value = '';
+                        } else if (fieldKey === 'oblast') {
+                            document.getElementById('okrug').value = '';
+                            document.getElementById('rayon').value = '';
+                            document.getElementById('deliveryCode').value = '';
+                        }
+                    });
+
+                    listContainer.appendChild(itemDiv);
+                }
+            });
+        }
+
+        input.addEventListener('input', function() {
+            renderList(this.value);
+        });
+
+        input.addEventListener('focus', function() {
+            renderList(this.value);
+        });
+    }
+
+    function setupCascadingDays(day1Id, day2GroupId, day2Id, day3GroupId, day3Id) {
+        const day1 = document.getElementById(day1Id);
+        const day2Group = document.getElementById(day2GroupId);
+        const day2 = document.getElementById(day2Id);
+        const day3Group = document.getElementById(day3GroupId);
+        const day3 = document.getElementById(day3Id);
+
+        day1.addEventListener('change', function() {
+            if (this.value) {
+                day2Group.style.display = 'block';
+            } else {
+                day2Group.style.display = 'none';
+                day3Group.style.display = 'none';
+                day2.value = '';
+                day3.value = '';
+            }
+        });
+
+        day2.addEventListener('change', function() {
+            if (this.value) {
+                day3Group.style.display = 'block';
+            } else {
+                day3Group.style.display = 'none';
+                day3.value = '';
+            }
+        });
+    }
+
+    setupCascadingDays('attachDay1', 'attachDay2-group', 'attachDay2', 'attachDay3-group', 'attachDay3');
+    setupCascadingDays('visitDay1', 'visitDay2-group', 'visitDay2', 'visitDay3-group', 'visitDay3');
+
+    function closeAllLists(elmnt) {
+        const items = document.getElementsByClassName('autocomplete-items');
+        for (let i = 0; i < items.length; i++) {
+            if (elmnt !== items[i] && !items[i].contains(elmnt) && elmnt !== items[i].parentNode.querySelector('input')) {
+                items[i].parentNode.removeChild(items[i]);
+            }
+        }
+    }
+
+    document.addEventListener('click', function (e) {
+        closeAllLists(e.target);
+    });
+
+    // Инициализируем автодополнение для всех нужных полей
+    ['region', 'oblast', 'okrug', 'rayon', 'format', 'channel', 'type', 'category', 'deliveryCode'].forEach(key => {
+        setupAutocomplete(key, key);
+    });
+
+    let currentUser = null;
+
+    function showScreen(screenId) {
+        document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
+        document.getElementById(screenId).classList.add('active');
+    }
+
+    // 1. АВТОРИЗАЦИЯ
+    document.getElementById('auth-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const login = document.getElementById('loginAgent').value.trim();
+        const password = document.getElementById('loginPassword').value.trim();
+        const statusDiv = document.getElementById('auth-status');
+        const submitBtn = document.getElementById('auth-btn');
+        const loader = document.getElementById('loader');
+
+        statusDiv.style.display = 'none';
+        submitBtn.disabled = true;
+        loader.style.display = 'block';
+
+        try {
+            const response = await fetch(WEB_APP_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action: 'login', login: login, password: password })
+            });
+
+            const result = await response.json();
+            
+            if (result.success) {
+                statusDiv.className = 'status-message success';
+                statusDiv.textContent = result.message || "Успешный вход!";
+                statusDiv.style.display = 'block';
+
+                currentUser = login.toUpperCase();
+                document.getElementById('display-user').textContent = currentUser;
+                document.getElementById('attach-agent-label').textContent = currentUser;
+                document.getElementById('agentLogin').value = currentUser;
+
+                setTimeout(() => {
+                    showScreen('screen-inn-check');
+                    statusDiv.style.display = 'none';
+                    document.getElementById('auth-form').reset();
+                }, 500);
+            } else {
+                statusDiv.className = 'status-message error';
+                statusDiv.textContent = result.message || "Неверный логин или пароль";
+                statusDiv.style.display = 'block';
+            }
+        } catch (err) {
+            statusDiv.className = 'status-message error';
+            statusDiv.textContent = "Ошибка связи со скриптом: " + err.message;
+            statusDiv.style.display = 'block';
+        } finally {
+            submitBtn.disabled = false;
+            loader.style.display = 'none';
+        }
+    });
+
+    // 2. ПРОВЕРКА ИНН
+    document.getElementById('inn-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const innValue = document.getElementById('checkInnInput').value.trim();
+        const statusDiv = document.getElementById('inn-status');
+        
+        const innRegex = /^\d{9}$|^\d{14}$/;
+        if (!innRegex.test(innValue)) {
+            statusDiv.className = 'status-message error';
+            statusDiv.textContent = "ИНН должен содержать ровно 9 или 14 цифр!";
+            statusDiv.style.display = 'block';
+            return;
+        }
+
+        const btn = document.getElementById('inn-btn');
+        const loader = document.getElementById('inn-loader');
+
+        statusDiv.style.display = 'none';
+        btn.disabled = true;
+        loader.style.display = 'block';
+
+        try {
+            const response = await fetch(WEB_APP_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action: 'check_inn', inn: innValue })
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                if (result.exists) {
+                    document.getElementById('attachPointName').value = result.pointName;
+                    document.getElementById('attachPointCode').value = result.pointCode;
+                    showScreen('screen-attach');
+                } else {
+                    document.getElementById('inn').value = innValue;
+                    showScreen('screen-add');
+                }
+                document.getElementById('checkInnInput').value = '';
+            } else {
+                statusDiv.className = 'status-message error';
+                statusDiv.textContent = result.message || "Ошибка при поиске ИНН";
+                statusDiv.style.display = 'block';
+            }
+        } catch (err) {
+            statusDiv.className = 'status-message error';
+            statusDiv.textContent = "Ошибка связи с сервером. Попробуйте ещё раз.";
+            statusDiv.style.display = 'block';
+        } finally {
+            btn.disabled = false;
+            loader.style.display = 'none';
+        }
+    });
+
+    // 3. ПРИКРЕПЛЕНИЕ
+    document.getElementById('attach-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('attach-btn');
+        btn.disabled = true;
+
+        const attachVisitDays = [
+            document.getElementById('attachDay1').value,
+            document.getElementById('attachDay2').value,
+            document.getElementById('attachDay3').value
+        ].filter(Boolean);
+
+        const data = {
+            action: 'attach',
+            agent: currentUser,
+            pointCode: document.getElementById('attachPointCode').value,
+            pointName: document.getElementById('attachPointName').value,
+            visitDay: attachVisitDays.join(', ')
+        };
+
+        try {
+            const res = await fetch(WEB_APP_URL, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify(data) 
+            });
+            const result = await res.json();
+            
+            if (result.success) {
+                alert(result.message || "Точка успешно прикреплена!");
+                this.reset();
+                document.getElementById('attachDay2-group').style.display = 'none';
+                document.getElementById('attachDay3-group').style.display = 'none';
+                showScreen('screen-inn-check');
+            } else {
+                alert("Ошибка: " + result.message);
+            }
+        } catch (err) {
+            alert("Ошибка связи с сервером. Попробуйте ещё раз.");
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    // 4. ДОБАВЛЕНИЕ НОВОЙ ТТ
+    document.getElementById('tt-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = document.getElementById('add-btn');
+        btn.disabled = true;
+
+        const addVisitDays = [
+            document.getElementById('visitDay1').value,
+            document.getElementById('visitDay2').value,
+            document.getElementById('visitDay3').value
+        ].filter(Boolean);
+
+        const data = {
+            action: 'add_tt',
+            agent: currentUser,
+            clientName: document.getElementById('clientName').value,
+            address: document.getElementById('address').value,
+            phone: document.getElementById('phone').value,
+            inn: document.getElementById('inn').value,
+            
+            region: document.getElementById('region').value,
+            oblast: document.getElementById('oblast').value,
+            okrug: document.getElementById('okrug').value,
+            rayon: document.getElementById('rayon').value,
+            format: document.getElementById('format').value,
+            channel: document.getElementById('channel').value,
+            type: document.getElementById('type').value,
+            category: document.getElementById('category').value,
+            deliveryCode: document.getElementById('deliveryCode').value,
+            visitDay: addVisitDays.join(', '),
+            comments: document.getElementById('comments').value
+        };
+
+        try {
+            const res = await fetch(WEB_APP_URL, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify(data) 
+            });
+            const result = await res.json();
+            
+            if (result.success) {
+                alert(result.message || "Торговая точка добавлена!");
+                this.reset();
+                document.getElementById('visitDay2-group').style.display = 'none';
+                document.getElementById('visitDay3-group').style.display = 'none';
+                document.getElementById('agentLogin').value = currentUser;
+                showScreen('screen-inn-check');
+            } else {
+                alert("Ошибка: " + result.message);
+            }
+        } catch (err) {
+            alert("Ошибка связи с сервером. Попробуйте ещё раз.");
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    function logout() {
+        currentUser = null;
+        document.getElementById('auth-form').reset();
+        showScreen('screen-auth');
+    }
+
+    const clientNameInput = document.getElementById('clientName');
+    clientNameInput.addEventListener('input', function(e) {
+        let val = e.target.value.toUpperCase();
+        const stopwords = /\b(OOO|MCHJ|YATT|XK|ООО|МЧЖ|ЯТТ)\b/g;
+        val = val.replace(stopwords, '').replace(/[^A-Z0-9\s]/g, '').replace(/\s{2,}/g, ' ');
+        e.target.value = val.trimStart();
+    });
+</script>
+
+</body>
+</html>

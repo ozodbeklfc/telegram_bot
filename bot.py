@@ -15,6 +15,7 @@ from states import AuthStates, InnStates, AttachStates, AddStates, ChangePasswor
 import api
 import data
 from keyboards import build_paginated_keyboard, build_days_keyboard, confirm_keyboard
+from web import start_web_server
 
 logging.basicConfig(level=logging.INFO)
 
@@ -958,9 +959,16 @@ async def main():
     ])
 
     await bot.delete_webhook(drop_pending_updates=True)
+
+    # Веб-сервис для сайта (index.html) поднимается в том же процессе:
+    # так бот и сайт делят один пул соединений с базой, и на Railway
+    # достаточно одного сервиса вместо двух.
+    web_runner = await start_web_server()
+
     try:
         await dp.start_polling(bot)
     finally:
+        await web_runner.cleanup()
         await api.close_pool()
 
 
