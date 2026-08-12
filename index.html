@@ -96,7 +96,10 @@
     <div id="screen-inn-check" class="screen">
         <div class="user-bar">
             <span>👤 <span id="display-user">OR0111</span></span>
-            <button class="btn-logout" onclick="logout()">Выйти</button>
+            <span>
+                <button class="btn-logout" style="color:#0056b3; margin-right:12px;" onclick="openChangePassword()">Сменить пароль</button>
+                <button class="btn-logout" onclick="logout()">Выйти</button>
+            </span>
         </div>
 
         <h2>Проверка базы данных</h2>
@@ -111,6 +114,33 @@
             <div id="inn-loader" class="loader">⏳ Ищем точку в базе...</div>
 
             <button type="submit" id="inn-btn" class="btn-submit">Проверить точку</button>
+        </form>
+    </div>
+
+    <!-- ЭКРАН СМЕНЫ ПАРОЛЯ -->
+    <div id="screen-password" class="screen">
+        <button type="button" class="btn-back" onclick="showScreen('screen-inn-check')">← Назад к ИНН</button>
+        <h2>Смена пароля</h2>
+        <p class="subtitle">Агент: <b id="pwd-user"></b></p>
+
+        <form id="password-form">
+            <div class="form-group">
+                <label for="pwdCurrent">Текущий пароль</label>
+                <input type="password" id="pwdCurrent" required autocomplete="current-password">
+            </div>
+            <div class="form-group">
+                <label for="pwdNew">Новый пароль (минимум 4 символа, без пробелов)</label>
+                <input type="password" id="pwdNew" required autocomplete="new-password">
+            </div>
+            <div class="form-group">
+                <label for="pwdRepeat">Повторите новый пароль</label>
+                <input type="password" id="pwdRepeat" required autocomplete="new-password">
+            </div>
+
+            <div id="pwd-status" class="status-message"></div>
+            <div id="pwd-loader" class="loader">⏳ Сохраняю новый пароль...</div>
+
+            <button type="submit" id="pwd-btn" class="btn-submit">Сменить пароль</button>
         </form>
     </div>
 
@@ -707,6 +737,70 @@
             alert("Ошибка связи с сервером. Попробуйте ещё раз.");
         } finally {
             btn.disabled = false;
+        }
+    });
+
+    // ---------- СМЕНА ПАРОЛЯ ----------
+    function openChangePassword() {
+        document.getElementById('pwd-user').textContent = currentUser;
+        document.getElementById('password-form').reset();
+        document.getElementById('pwd-status').style.display = 'none';
+        showScreen('screen-password');
+    }
+
+    document.getElementById('password-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+
+        const current = document.getElementById('pwdCurrent').value.trim();
+        const newPwd  = document.getElementById('pwdNew').value.trim();
+        const repeat  = document.getElementById('pwdRepeat').value.trim();
+
+        const statusDiv = document.getElementById('pwd-status');
+        const btn = document.getElementById('pwd-btn');
+        const loader = document.getElementById('pwd-loader');
+
+        function showError(text) {
+            statusDiv.className = 'status-message error';
+            statusDiv.textContent = text;
+            statusDiv.style.display = 'block';
+        }
+
+        // Проверки на стороне браузера — те же правила, что и в боте
+        statusDiv.style.display = 'none';
+        if (newPwd === current) { showError("Новый пароль совпадает со старым — придумайте другой."); return; }
+        if (newPwd.length < 4)  { showError("Слишком короткий пароль — минимум 4 символа."); return; }
+        if (newPwd.length > 32) { showError("Слишком длинный пароль — максимум 32 символа."); return; }
+        if (/\s/.test(newPwd))  { showError("Пароль не должен содержать пробелов."); return; }
+        if (newPwd !== repeat)  { showError("Пароли не совпадают."); return; }
+
+        btn.disabled = true;
+        loader.style.display = 'block';
+
+        try {
+            const res = await fetch(WEB_APP_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                    action: 'change_password',
+                    login: currentUser,
+                    currentPassword: current,
+                    newPassword: newPwd
+                })
+            });
+            const result = await res.json();
+
+            if (result.success) {
+                alert("Пароль изменён. В следующий раз входите с новым паролем.");
+                this.reset();
+                showScreen('screen-inn-check');
+            } else {
+                showError(result.message || "Не удалось сменить пароль");
+            }
+        } catch (err) {
+            showError("Ошибка связи с сервером. Попробуйте ещё раз.");
+        } finally {
+            btn.disabled = false;
+            loader.style.display = 'none';
         }
     });
 

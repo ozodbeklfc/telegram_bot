@@ -19,6 +19,7 @@ from pathlib import Path
 from aiohttp import web
 
 import api
+import notify
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +81,13 @@ async def handle_api(request: web.Request) -> web.Response:
                 point_name=payload.get("pointName", ""),
                 visit_day=payload.get("visitDay", ""),
             )
+            if result.get("success"):
+                await notify.notify_admin(notify.build_attach_text(payload))
 
         elif action == "add_tt":
             result = await api.add_tt(payload)
+            if result.get("success"):
+                await notify.notify_admin(notify.build_add_text(payload))
 
         elif action == "change_password":
             result = await api.change_password(
@@ -90,6 +95,10 @@ async def handle_api(request: web.Request) -> web.Response:
                 current_password=payload.get("currentPassword", ""),
                 new_password=payload.get("newPassword", ""),
             )
+            if result.get("success"):
+                await notify.notify_admin(
+                    notify.build_password_changed_text(payload.get("login", ""))
+                )
 
         else:
             result = {"success": False, "message": f"Неизвестное действие: {action}"}
