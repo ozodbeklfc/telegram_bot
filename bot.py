@@ -35,11 +35,11 @@ def get_items_for(field: str, fsm_data: dict) -> list[str]:
     if field == "region":
         return data.REGIONS
     if field == "oblast":
-        return data.OBLAST.get(fsm_data.get("region"), [])
+        return data.OBLAST
     if field == "okrug":
-        return data.OKRUG.get(fsm_data.get("oblast"), [])
+        return data.OKRUG
     if field == "rayon":
-        return data.RAYON.get(fsm_data.get("oblast"), [])
+        return data.RAYON
     if field == "format":
         return data.FORMAT
     if field == "channel":
@@ -49,7 +49,7 @@ def get_items_for(field: str, fsm_data: dict) -> list[str]:
     if field == "category":
         return data.CATEGORY
     if field == "delivery":
-        return data.DELIVERY_CODE.get(fsm_data.get("oblast"), data.DELIVERY_CODE["DEFAULT"])
+        return data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
     return []
 
 
@@ -205,19 +205,18 @@ async def render_step(target_state, message: Message, state: FSMContext):
         region = fsm_data.get("region")
         await message.answer(
             f"Регион: {region}\n\n6️⃣ Выберите область:",
-            reply_markup=build_paginated_keyboard(data.OBLAST.get(region, []), "oblast"),
+            reply_markup=build_paginated_keyboard(data.OBLAST, "oblast"),
         )
     elif s == AddStates.choosing_okrug.state:
         oblast = fsm_data.get("oblast")
         await message.answer(
             f"Область: {oblast}\n\n7️⃣ Выберите округ:",
-            reply_markup=build_paginated_keyboard(data.OKRUG.get(oblast, []), "okrug"),
+            reply_markup=build_paginated_keyboard(data.OKRUG, "okrug"),
         )
     elif s == AddStates.choosing_rayon.state:
-        oblast = fsm_data.get("oblast")
         await message.answer(
             f"Округ: {fsm_data.get('okrug')}\n\n8️⃣ Выберите район:",
-            reply_markup=build_paginated_keyboard(data.RAYON.get(oblast, []), "rayon"),
+            reply_markup=build_paginated_keyboard(data.RAYON, "rayon"),
         )
     elif s == AddStates.choosing_format.state:
         await message.answer("9️⃣ Выберите формат:", reply_markup=build_paginated_keyboard(data.FORMAT, "format"))
@@ -228,8 +227,7 @@ async def render_step(target_state, message: Message, state: FSMContext):
     elif s == AddStates.choosing_category.state:
         await message.answer("1️⃣2️⃣ Выберите категорию:", reply_markup=build_paginated_keyboard(data.CATEGORY, "category"))
     elif s == AddStates.choosing_delivery.state:
-        oblast = fsm_data.get("oblast")
-        delivery_list = data.DELIVERY_CODE.get(oblast, data.DELIVERY_CODE["DEFAULT"])
+        delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
         await message.answer("1️⃣3️⃣ Выберите код доставщика:", reply_markup=build_paginated_keyboard(delivery_list, "delivery"))
     elif s == AddStates.choosing_days.state:
         await message.answer(
@@ -441,55 +439,46 @@ async def add_region(callback: CallbackQuery, state: FSMContext):
     region = data.REGIONS[idx]
     await state.update_data(region=region)
 
-    oblast_list = data.OBLAST.get(region, [])
     await state.set_state(AddStates.choosing_oblast)
     await callback.message.edit_text(
         f"Регион: {region}\n\n6️⃣ Выберите область:",
-        reply_markup=build_paginated_keyboard(oblast_list, "oblast"),
+        reply_markup=build_paginated_keyboard(data.OBLAST, "oblast"),
     )
     await safe_answer(callback)
 
 
 @router.callback_query(AddStates.choosing_oblast, F.data.startswith("oblast:"))
 async def add_oblast(callback: CallbackQuery, state: FSMContext):
-    fsm_data = await state.get_data()
-    region = fsm_data.get("region")
     idx = int(callback.data.split(":")[1])
-    oblast = data.OBLAST.get(region, [])[idx]
+    oblast = data.OBLAST[idx]
     await state.update_data(oblast=oblast)
 
-    okrug_list = data.OKRUG.get(oblast, [])
     await state.set_state(AddStates.choosing_okrug)
     await callback.message.edit_text(
         f"Область: {oblast}\n\n7️⃣ Выберите округ:",
-        reply_markup=build_paginated_keyboard(okrug_list, "okrug"),
+        reply_markup=build_paginated_keyboard(data.OKRUG, "okrug"),
     )
     await safe_answer(callback)
 
 
 @router.callback_query(AddStates.choosing_okrug, F.data.startswith("okrug:"))
 async def add_okrug(callback: CallbackQuery, state: FSMContext):
-    fsm_data = await state.get_data()
-    oblast = fsm_data.get("oblast")
     idx = int(callback.data.split(":")[1])
-    okrug = data.OKRUG.get(oblast, [])[idx]
+    okrug = data.OKRUG[idx]
     await state.update_data(okrug=okrug)
 
-    rayon_list = data.RAYON.get(oblast, [])
     await state.set_state(AddStates.choosing_rayon)
     await callback.message.edit_text(
         f"Округ: {okrug}\n\n8️⃣ Выберите район:",
-        reply_markup=build_paginated_keyboard(rayon_list, "rayon"),
+        reply_markup=build_paginated_keyboard(data.RAYON, "rayon"),
     )
     await safe_answer(callback)
 
 
 @router.callback_query(AddStates.choosing_rayon, F.data.startswith("rayon:"))
 async def add_rayon(callback: CallbackQuery, state: FSMContext):
-    fsm_data = await state.get_data()
-    oblast = fsm_data.get("oblast")
     idx = int(callback.data.split(":")[1])
-    rayon = data.RAYON.get(oblast, [])[idx]
+    rayon = data.RAYON[idx]
     await state.update_data(rayon=rayon)
 
     await state.set_state(AddStates.choosing_format)
@@ -545,12 +534,11 @@ async def add_type(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(AddStates.choosing_category, F.data.startswith("category:"))
 async def add_category(callback: CallbackQuery, state: FSMContext):
     fsm_data = await state.get_data()
-    oblast = fsm_data.get("oblast")
     idx = int(callback.data.split(":")[1])
     category = data.CATEGORY[idx]
     await state.update_data(category=category)
 
-    delivery_list = data.DELIVERY_CODE.get(oblast, data.DELIVERY_CODE["DEFAULT"])
+    delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
     await state.set_state(AddStates.choosing_delivery)
     await callback.message.edit_text(
         f"Категория: {category}\n\n1️⃣3️⃣ Выберите код доставщика:",
@@ -562,9 +550,8 @@ async def add_category(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(AddStates.choosing_delivery, F.data.startswith("delivery:"))
 async def add_delivery(callback: CallbackQuery, state: FSMContext):
     fsm_data = await state.get_data()
-    oblast = fsm_data.get("oblast")
     idx = int(callback.data.split(":")[1])
-    delivery_list = data.DELIVERY_CODE.get(oblast, data.DELIVERY_CODE["DEFAULT"])
+    delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
     delivery_code = delivery_list[idx]
     await state.update_data(deliveryCode=delivery_code, visit_days=[])
 
