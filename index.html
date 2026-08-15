@@ -398,7 +398,6 @@
                         <option value="Среда">Среда</option>
                         <option value="Четверг">Четверг</option>
                         <option value="Пятница">Пятница</option>
-                        <option value="Суббота">Суббота</option>
                     </select>
                 </div>
             </div>
@@ -412,7 +411,6 @@
                     <option value="Среда">Среда</option>
                     <option value="Четверг">Четверг</option>
                     <option value="Пятница">Пятница</option>
-                    <option value="Суббота">Суббота</option>
                 </select>
             </div>
 
@@ -425,7 +423,6 @@
                     <option value="Среда">Среда</option>
                     <option value="Четверг">Четверг</option>
                     <option value="Пятница">Пятница</option>
-                    <option value="Суббота">Суббота</option>
                 </select>
             </div>
 
@@ -1078,6 +1075,10 @@
         });
     }
 
+    // Сколько дней ещё можно выбрать на экране прикрепления.
+    // Меняется в applyTakenDays после проверки на сервере.
+    let attachRemaining = 3;
+
     function setupCascadingDays(day1Id, day2GroupId, day2Id, day3GroupId, day3Id) {
         const day1 = document.getElementById(day1Id);
         const day2Group = document.getElementById(day2GroupId);
@@ -1085,9 +1086,13 @@
         const day3Group = document.getElementById(day3GroupId);
         const day3 = document.getElementById(day3Id);
 
+        // Ограничение действует только на прикреплении: при добавлении
+        // новой точки в базе ещё нет ни одного дня этого агента
+        const limited = day1Id.startsWith('attach');
+
         day1.addEventListener('change', function() {
             if (this.value) {
-                day2Group.style.display = 'block';
+                if (!limited || attachRemaining >= 2) day2Group.style.display = 'block';
             } else {
                 day2Group.style.display = 'none';
                 day3Group.style.display = 'none';
@@ -1098,7 +1103,7 @@
 
         day2.addEventListener('change', function() {
             if (this.value) {
-                day3Group.style.display = 'block';
+                if (!limited || attachRemaining >= 3) day3Group.style.display = 'block';
             } else {
                 day3Group.style.display = 'none';
                 day3.value = '';
@@ -1331,8 +1336,33 @@
     });
 
     // 4. ДОБАВЛЕНИЕ НОВОЙ ТТ
+    const PHONE_REGEX = /^\+998\d{9}$/;
+
     document.getElementById('tt-form').addEventListener('submit', async function(e) {
         e.preventDefault();
+
+        // Проверки формата: на сайте их не было, и в базу попадали заявки
+        // с телефоном "123"
+        const phoneValue = document.getElementById('phone').value.trim();
+        if (!PHONE_REGEX.test(phoneValue)) {
+            alert("Неверный формат телефона.\n\nНужно строго +998XXXXXXXXX — " +
+                  "9 цифр после +998, без пробелов и скобок.");
+            document.getElementById('phone').focus();
+            return;
+        }
+
+        const addressValue = document.getElementById('address').value.trim();
+        if (addressValue.length < 5) {
+            alert("Адрес слишком короткий — укажите его полностью.");
+            document.getElementById('address').focus();
+            return;
+        }
+
+        if (!document.getElementById('geo').value.trim()) {
+            alert("Не указана геометка. Нажмите «Я на точке» или «Выбрать на карте».");
+            return;
+        }
+
         const btn = document.getElementById('add-btn');
         btn.disabled = true;
 
@@ -1732,6 +1762,18 @@
             });
             if (taken.includes(select.value)) select.value = '';
         });
+
+        // Больше остатка выбрать нельзя: с двумя занятыми днями видно
+        // только одно поле, с одним — два
+        attachRemaining = remaining;
+        if (remaining < 2) {
+            document.getElementById('attachDay2-group').style.display = 'none';
+            document.getElementById('attachDay2').value = '';
+        }
+        if (remaining < 3) {
+            document.getElementById('attachDay3-group').style.display = 'none';
+            document.getElementById('attachDay3').value = '';
+        }
 
         const note = document.getElementById('attach-note');
         if (note) {

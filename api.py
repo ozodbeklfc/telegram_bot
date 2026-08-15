@@ -346,7 +346,45 @@ async def search_similar_points(name: str, limit: int = SIMILAR_LIMIT) -> dict:
 # ======================================================================
 
 async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -> dict:
+    """
+    Прикрепляет точку к агенту.
+
+    Правила проверяются ЗДЕСЬ, а не только в интерфейсе: бот и сайт — это
+    два независимых клиента, и любой из них может отправить запрос с лишними
+    днями (так и случилось: сайт ограничивал выбор занятых дней, но не их
+    количество, и у агента набралось пять дней вместо трёх).
+    """
     brand = agent_brand(agent)
+    days = split_days(visit_day)
+
+    if not days:
+        return {"success": False, "message": "Не выбран ни один день визита"}
+
+    check = await check_attach_allowed(point_code, agent)
+    if not check.get("success"):
+        return check
+
+    if not check.get("allowed"):
+        if check.get("reason") == "brand":
+            return {"success": False,
+                    "message": f"В этой точке закреплён другой агент вашего бренда "
+                               f"({check.get('blockedBy')})"}
+        return {"success": False,
+                "message": f"У вас уже {MAX_VISIT_DAYS} дня в этой точке: "
+                           f"{', '.join(check.get('myDays', []))}"}
+
+    my_days = check.get("myDays", [])
+    remaining = check.get("remaining", MAX_VISIT_DAYS)
+
+    duplicates = [d for d in days if d in my_days]
+    if duplicates:
+        return {"success": False,
+                "message": f"Эти дни у вас уже заняты на этой точке: {', '.join(duplicates)}"}
+
+    if len(days) > remaining:
+        return {"success": False,
+                "message": f"Можно выбрать ещё {remaining}, а выбрано {len(days)}. "
+                           f"Всего на одну точку — не больше {MAX_VISIT_DAYS} дней."}
 
     try:
         pool = await get_pool()
@@ -357,7 +395,7 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -
                     (point_code, point_name, agent_brand, agent, visit_day)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                point_code, point_name, brand, agent, visit_day,
+                point_code, point_name, brand, agent, ", ".join(days),
             )
     except Exception as e:
         return _db_error(e)
