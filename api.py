@@ -359,6 +359,14 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -
     if not days:
         return {"success": False, "message": "Не выбран ни один день визита"}
 
+    # Один и тот же день дважды в одном запросе — не ошибка агента, а недосмотр
+    # формы, но в базу он попасть не должен: два визита в понедельник займут
+    # два места из трёх
+    repeated = [d for d in set(days) if days.count(d) > 1]
+    if repeated:
+        return {"success": False,
+                "message": f"Один и тот же день выбран несколько раз: {', '.join(repeated)}"}
+
     check = await check_attach_allowed(point_code, agent)
     if not check.get("success"):
         return check

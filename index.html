@@ -1079,6 +1079,37 @@
     // Меняется в applyTakenDays после проверки на сервере.
     let attachRemaining = 3;
 
+    // Дни, уже занятые этим агентом на выбранной точке
+    let attachTakenDays = [];
+
+    function refreshDayOptions(ids, taken) {
+        // Один день нельзя выбрать дважды: два визита в понедельник заняли бы
+        // два места из трёх. Поэтому уже выбранные дни блокируются в соседних
+        // списках, а занятые ранее — во всех сразу.
+        const chosen = ids
+            .map(id => document.getElementById(id))
+            .filter(Boolean)
+            .map(sel => sel.value)
+            .filter(Boolean);
+
+        ids.forEach(id => {
+            const select = document.getElementById(id);
+            if (!select) return;
+
+            [...select.options].forEach(opt => {
+                if (!opt.value) return;
+
+                const isTaken = (taken || []).includes(opt.value);
+                // День, уже выбранный в СОСЕДНЕМ списке (в своём — оставляем,
+                // иначе выбранное значение пропало бы из собственного списка)
+                const usedElsewhere = opt.value !== select.value && chosen.includes(opt.value);
+
+                opt.disabled = isTaken || usedElsewhere;
+                opt.textContent = isTaken ? opt.value + ' — уже занят вами' : opt.value;
+            });
+        });
+    }
+
     function setupCascadingDays(day1Id, day2GroupId, day2Id, day3GroupId, day3Id) {
         const day1 = document.getElementById(day1Id);
         const day2Group = document.getElementById(day2GroupId);
@@ -1089,6 +1120,13 @@
         // Ограничение действует только на прикреплении: при добавлении
         // новой точки в базе ещё нет ни одного дня этого агента
         const limited = day1Id.startsWith('attach');
+
+        const allIds = [day1Id, day2Id, day3Id];
+        const takenFor = () => (limited ? attachTakenDays : []);
+
+        [day1, day2, day3].forEach(sel => {
+            sel.addEventListener('change', () => refreshDayOptions(allIds, takenFor()));
+        });
 
         day1.addEventListener('change', function() {
             if (this.value) {
@@ -1751,17 +1789,17 @@
     function applyTakenDays(taken, remaining) {
         // Дни, уже занятые этим агентом на этой точке, выбирать нельзя:
         // иначе агент занял бы один день дважды и упёрся в лимит зря.
+        attachTakenDays = taken;
+
+        // Сбрасываем прошлый выбор: точка новая, старые дни к ней не относятся
         ['attachDay1', 'attachDay2', 'attachDay3'].forEach(id => {
             const select = document.getElementById(id);
-            if (!select) return;
-            [...select.options].forEach(opt => {
-                if (!opt.value) return;
-                const isTaken = taken.includes(opt.value);
-                opt.disabled = isTaken;
-                opt.textContent = isTaken ? opt.value + ' — уже занят вами' : opt.value;
-            });
-            if (taken.includes(select.value)) select.value = '';
+            if (select) select.value = '';
         });
+        document.getElementById('attachDay2-group').style.display = 'none';
+        document.getElementById('attachDay3-group').style.display = 'none';
+
+        refreshDayOptions(['attachDay1', 'attachDay2', 'attachDay3'], taken);
 
         // Больше остатка выбрать нельзя: с двумя занятыми днями видно
         // только одно поле, с одним — два
