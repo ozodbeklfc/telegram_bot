@@ -11,6 +11,7 @@
 """
 
 import logging
+import re
 
 import asyncpg
 
@@ -18,11 +19,30 @@ from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
+# Порог схожести названий (0..1). 0.35 ловит "MUXAYYO TRADE" против
+# "MUHAYO TRADE" (сходство 0.5) и при этом не выдаёт случайные совпадения.
+# Снизишь — будет больше ложных срабатываний, повысишь — опечатки начнут
+# проскакивать мимо.
+SIMILARITY_THRESHOLD = 0.35
+SIMILAR_LIMIT = 3
+
 POOL_MIN_SIZE = 1
 POOL_MAX_SIZE = 10
 COMMAND_TIMEOUT = 15  # секунд на один запрос
 
 _pool: asyncpg.Pool | None = None
+
+
+async def _init_connection(conn):
+    """
+    Выполняется для каждого нового соединения в пуле.
+
+    pg_trgm сравнивает строки оператором %, а порог срабатывания хранится
+    в настройке соединения. Без этой строки порог был бы 0.3 по умолчанию,
+    и он бы не совпадал с SIMILARITY_THRESHOLD, по которому мы потом
+    отсеиваем результаты.
+    """
+    await conn.execute(f"SET pg_trgm.similarity_threshold = {SIMILARITY_THRESHOLD}")
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -38,6 +58,7 @@ async def get_pool() -> asyncpg.Pool:
             min_size=POOL_MIN_SIZE,
             max_size=POOL_MAX_SIZE,
             command_timeout=COMMAND_TIMEOUT,
+            setup=_init_connection,
         )
         logger.info("Пул соединений с Postgres создан")
     return _pool
@@ -126,14 +147,33 @@ async def change_password(login_value: str, current_password: str, new_password:
 # ПОИСК ТОЧКИ ПО ИНН
 # ======================================================================
 
+# Приставки и суффиксы организационных форм: при сравнении названий они
+# только мешают — "OSIYO MARKET" и "OSIYO MARKET MCHJ" это одна точка.
+LEGAL_FORMS = re.compile(r"\b(OOO|MCHJ|YATT|YTT|XK|QK|MSHJ|ООО|МЧЖ|ЯТТ)\b", re.I)
+
+
+def normalize_name(name: str) -> str:
+    """Приводит название к виду, удобному для сравнения."""
+    val = (name or "").upper()
+    val = LEGAL_FORMS.sub(" ", val)
+    val = re.sub(r"[^A-Z0-9\s]", " ", val)
+    return re.sub(r"\s+", " ", val).strip()
+
+
 async def check_inn(inn: str) -> dict:
-    inn = (inn or "").strip()
+    # В базе ИНН хранятся очищенными от пометок ('306955509+' → '306955509'),
+    # но на всякий случай чистим и то, что ввёл пользователь
+    inn = re.sub(r"[^0-9]", "", inn or "")
 
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT point_code, point_name FROM client_base WHERE inn = $1",
+                """
+                SELECT point_code, point_name, status, inn_raw
+                  FROM client_base
+                 WHERE inn = $1
+                """,
                 inn,
             )
     except Exception as e:
@@ -147,7 +187,53 @@ async def check_inn(inn: str) -> dict:
         "exists": True,
         "pointCode": row["point_code"],
         "pointName": row["point_name"],
+        "status": row["status"] or 0,          # 1 = пассивная точка
+        "innRaw": row["inn_raw"] or inn,
     }
+
+
+async def search_similar_points(name: str, limit: int = SIMILAR_LIMIT) -> dict:
+    """
+    Ищет в базе точки с похожим названием.
+
+    Нужно для случая, когда агент ошибся в ИНН и пошёл добавлять точку,
+    которая на самом деле уже есть: "MUHAYO TRADE" против "MUXAYYO TRADE"
+    в базе. Сравнение идёт по нормализованным названиям (без MCHJ, YATT
+    и знаков препинания) через pg_trgm.
+    """
+    normalized = normalize_name(name)
+    if len(normalized) < 3:
+        # По двум буквам похожим окажется пол-базы
+        return {"success": True, "matches": []}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT point_code, point_name, inn, status,
+                       similarity(upper(point_name), $1) AS sim
+                  FROM client_base
+                 WHERE upper(point_name) % $1
+                 ORDER BY sim DESC
+                 LIMIT $2
+                """,
+                normalized, limit,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    matches = [
+        {
+            "pointCode": r["point_code"],
+            "pointName": r["point_name"],
+            "inn": r["inn"],
+            "status": r["status"] or 0,
+            "similarity": round(float(r["sim"]), 3),
+        }
+        for r in rows if float(r["sim"]) >= SIMILARITY_THRESHOLD
+    ]
+    return {"success": True, "matches": matches}
 
 
 # ======================================================================

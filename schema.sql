@@ -16,11 +16,20 @@ CREATE TABLE IF NOT EXISTS client_base (
     id         SERIAL PRIMARY KEY,
     point_code TEXT,
     point_name TEXT,
-    inn        TEXT NOT NULL UNIQUE
+    -- Только цифры: пометки вроде '306955509+' очищаются при загрузке
+    inn        TEXT NOT NULL UNIQUE,
+    -- Исходное значение из выгрузки, со всеми пометками
+    inn_raw    TEXT,
+    -- 0 = активная точка, 1 = пассивная (агент работать с ней не может)
+    status     SMALLINT NOT NULL DEFAULT 0
 );
 
--- Индекс для мгновенного поиска по ИНН (то, ради чего всё затевалось)
-CREATE INDEX IF NOT EXISTS idx_client_base_inn ON client_base (inn);
+-- UNIQUE на inn уже создаёт индекс, отдельный не нужен
+
+-- Поиск похожих названий: ловит опечатки вроде MUHAYO / MUXAYYO
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_client_base_name_trgm
+    ON client_base USING gin (point_name gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS attachments (
     id          SERIAL PRIMARY KEY,

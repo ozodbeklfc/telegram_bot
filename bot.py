@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardRemove, ReplyKeyboardMarkup, BotCommand,
+    InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
 from config import BOT_TOKEN, ADMIN_ID
@@ -35,11 +36,12 @@ def get_items_for(field: str, fsm_data: dict) -> list[str]:
     if field == "region":
         return data.REGIONS
     if field == "oblast":
-        return data.OBLAST
+        return data.OBLAST.get(fsm_data.get("region"), [])
     if field == "okrug":
-        return data.OKRUG
+        return data.OKRUG.get(fsm_data.get("oblast"), [])
     if field == "rayon":
-        return data.RAYON
+        # Район теперь зависит от ОКРУГА, а не от области
+        return data.get_rayons(fsm_data.get("okrug", ""))
     if field == "format":
         return data.FORMAT
     if field == "channel":
@@ -49,7 +51,7 @@ def get_items_for(field: str, fsm_data: dict) -> list[str]:
     if field == "category":
         return data.CATEGORY
     if field == "delivery":
-        return data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
+        return data.get_delivery_codes(fsm_data.get("oblast", ""))
     return []
 
 
@@ -162,7 +164,8 @@ async def change_password_start(message: Message, state: FSMContext):
 STEP_ORDER = {
     "auth": [AuthStates.waiting_login, AuthStates.waiting_password],
     "add": [
-        AddStates.waiting_client_name, AddStates.waiting_geo, AddStates.waiting_address,
+        AddStates.waiting_client_name, AddStates.confirm_similar,
+        AddStates.waiting_geo, AddStates.waiting_address,
         AddStates.waiting_phone, AddStates.choosing_region, AddStates.choosing_oblast,
         AddStates.choosing_okrug, AddStates.choosing_rayon, AddStates.choosing_format,
         AddStates.choosing_channel, AddStates.choosing_type, AddStates.choosing_category,
@@ -187,6 +190,12 @@ async def render_step(target_state, message: Message, state: FSMContext):
             "1️⃣ Введите название клиента (строго латиницей, например: SUPERMARKET MAX):",
             reply_markup=ReplyKeyboardRemove(),
         )
+    elif s == AddStates.confirm_similar.state:
+        matches = fsm_data.get("similar_matches", [])
+        await message.answer(
+            build_similar_text(fsm_data.get("clientName", ""), matches),
+            reply_markup=build_similar_keyboard(matches),
+        )
     elif s == AddStates.waiting_geo.state:
         await message.answer(
             "2️⃣ Отправьте геолокацию точки:\n\n"
@@ -205,18 +214,19 @@ async def render_step(target_state, message: Message, state: FSMContext):
         region = fsm_data.get("region")
         await message.answer(
             f"Регион: {region}\n\n6️⃣ Выберите область:",
-            reply_markup=build_paginated_keyboard(data.OBLAST, "oblast"),
+            reply_markup=build_paginated_keyboard(data.OBLAST.get(region, []), "oblast"),
         )
     elif s == AddStates.choosing_okrug.state:
         oblast = fsm_data.get("oblast")
         await message.answer(
             f"Область: {oblast}\n\n7️⃣ Выберите округ:",
-            reply_markup=build_paginated_keyboard(data.OKRUG, "okrug"),
+            reply_markup=build_paginated_keyboard(data.OKRUG.get(oblast, []), "okrug"),
         )
     elif s == AddStates.choosing_rayon.state:
+        okrug = fsm_data.get("okrug")
         await message.answer(
-            f"Округ: {fsm_data.get('okrug')}\n\n8️⃣ Выберите район:",
-            reply_markup=build_paginated_keyboard(data.RAYON, "rayon"),
+            f"Округ: {okrug}\n\n8️⃣ Выберите район:",
+            reply_markup=build_paginated_keyboard(data.get_rayons(okrug), "rayon"),
         )
     elif s == AddStates.choosing_format.state:
         await message.answer("9️⃣ Выберите формат:", reply_markup=build_paginated_keyboard(data.FORMAT, "format"))
@@ -227,7 +237,7 @@ async def render_step(target_state, message: Message, state: FSMContext):
     elif s == AddStates.choosing_category.state:
         await message.answer("1️⃣2️⃣ Выберите категорию:", reply_markup=build_paginated_keyboard(data.CATEGORY, "category"))
     elif s == AddStates.choosing_delivery.state:
-        delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
+        delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""))
         await message.answer("1️⃣3️⃣ Выберите код доставщика:", reply_markup=build_paginated_keyboard(delivery_list, "delivery"))
     elif s == AddStates.choosing_days.state:
         await message.answer(
@@ -338,6 +348,18 @@ async def process_inn(message: Message, state: FSMContext):
         return
 
     if result.get("exists"):
+        if result.get("status") == 1:
+            # Пассивная точка: работать с ней агент не может, отправляем
+            # обратно к вводу ИНН — состояние не меняем
+            await checking_msg.edit_text(
+                f"🔴 ЭТА ТОЧКА ПАССИВНАЯ\n\n"
+                f"🏪 {result.get('pointName')}\n"
+                f"🧾 ИНН: {inn_value}\n\n"
+                f"Обратитесь в финансовый отдел.\n\n"
+                f"Можете ввести другой ИНН:"
+            )
+            return
+
         await state.update_data(
             point_code=result.get("pointCode"),
             point_name=result.get("pointName"),
@@ -371,6 +393,24 @@ async def add_client_name(message: Message, state: FSMContext):
         await message.answer("⚠️ Название не может быть пустым. Введите название клиента:")
         return
     await state.update_data(clientName=cleaned)
+
+    # Агент мог ошибиться в ИНН и добавлять точку, которая уже есть в базе
+    # под чуть другим названием ("MUHAYO TRADE" против "MUXAYYO TRADE").
+    # Прежде чем вести его по 14 шагам формы — проверяем.
+    searching = await message.answer("⏳ Проверяю, нет ли такой точки в базе...")
+    similar = await api.search_similar_points(cleaned)
+    matches = similar.get("matches", [])
+
+    if matches:
+        await state.update_data(similar_matches=matches)
+        await state.set_state(AddStates.confirm_similar)
+        await searching.edit_text(
+            build_similar_text(cleaned, matches),
+            reply_markup=build_similar_keyboard(matches),
+        )
+        return
+
+    await searching.delete()
     await state.set_state(AddStates.waiting_geo)
     await message.answer(
         f"Принято: {cleaned}\n\n"
@@ -380,6 +420,96 @@ async def add_client_name(message: Message, state: FSMContext):
         f"(необязательно быть там физически), затем нажмите «Отправить геопозицию».",
         reply_markup=ReplyKeyboardRemove(),
     )
+
+
+def build_similar_text(entered: str, matches: list) -> str:
+    lines = [
+        "⚠️ ПОХОЖАЯ ТОЧКА УЖЕ ЕСТЬ В БАЗЕ",
+        "",
+        f"Вы вводите: {entered}",
+        "",
+        "Найдено в базе:",
+    ]
+    for i, m in enumerate(matches, start=1):
+        mark = " 🔴 пассивная" if m.get("status") == 1 else ""
+        lines.append(f"{i}. {m['pointName']}\n     ИНН: {m['inn']}{mark}")
+    lines += ["", "Это одна из них?"]
+    return "\n".join(lines)
+
+
+def build_similar_keyboard(matches: list) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"✅ Да, это «{m['pointName'][:28]}»",
+                              callback_data=f"sim:{i}")]
+        for i, m in enumerate(matches)
+    ]
+    rows.append([InlineKeyboardButton(text="❌ Нет, это новая точка",
+                                      callback_data="sim_no")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(AddStates.confirm_similar, F.data.startswith("sim:"))
+async def similar_yes(callback: CallbackQuery, state: FSMContext):
+    idx = int(callback.data.split(":")[1])
+    fsm_data = await state.get_data()
+    matches = fsm_data.get("similar_matches", [])
+
+    if idx >= len(matches):
+        await safe_answer(callback, "Список устарел, начните заново", show_alert=True)
+        return
+
+    point = matches[idx]
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    if point.get("status") == 1:
+        # Точка нашлась, но она пассивная — прикреплять нельзя
+        agent = fsm_data.get("agent")
+        await callback.message.edit_text(
+            f"🔴 ЭТА ТОЧКА ПАССИВНАЯ\n\n"
+            f"🏪 {point['pointName']}\n"
+            f"🧾 ИНН: {point['inn']}\n\n"
+            f"Обратитесь в финансовый отдел."
+        )
+        await state.set_data({"agent": agent})
+        await ask_inn(callback.message, state)
+        await safe_answer(callback)
+        return
+
+    # Переходим к прикреплению найденной точки
+    agent = fsm_data.get("agent")
+    await state.set_data({
+        "agent": agent,
+        "point_code": point["pointCode"],
+        "point_name": point["pointName"],
+        "visit_days": [],
+    })
+    await state.set_state(AttachStates.choosing_days)
+    await callback.message.edit_text(
+        f"✅ Прикрепляем существующую точку:\n\n"
+        f"🏪 {point['pointName']}\n"
+        f"🔢 Код: {point['pointCode']}\n"
+        f"🧾 ИНН: {point['inn']}\n\n"
+        f"Выберите дни визита (можно до 3):"
+    )
+    await callback.message.answer("👇", reply_markup=build_days_keyboard([]))
+    await safe_answer(callback)
+
+
+@router.callback_query(AddStates.confirm_similar, F.data == "sim_no")
+async def similar_no(callback: CallbackQuery, state: FSMContext):
+    fsm_data = await state.get_data()
+    await state.update_data(similar_matches=None)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.set_state(AddStates.waiting_geo)
+    await callback.message.answer(
+        f"Принято: {fsm_data.get('clientName')}\n\n"
+        f"2️⃣ Отправьте геолокацию точки:\n\n"
+        f"Нажмите на значок 📎 (скрепка) рядом с полем ввода → «Геопозиция» — "
+        f"там можно передвинуть булавку и выбрать нужную точку на карте "
+        f"(необязательно быть там физически), затем нажмите «Отправить геопозицию».",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await safe_answer(callback)
 
 
 @router.message(AddStates.waiting_geo, F.location)
@@ -439,46 +569,54 @@ async def add_region(callback: CallbackQuery, state: FSMContext):
     region = data.REGIONS[idx]
     await state.update_data(region=region)
 
+    oblast_list = data.OBLAST.get(region, [])
     await state.set_state(AddStates.choosing_oblast)
     await callback.message.edit_text(
         f"Регион: {region}\n\n6️⃣ Выберите область:",
-        reply_markup=build_paginated_keyboard(data.OBLAST, "oblast"),
+        reply_markup=build_paginated_keyboard(oblast_list, "oblast"),
     )
     await safe_answer(callback)
 
 
 @router.callback_query(AddStates.choosing_oblast, F.data.startswith("oblast:"))
 async def add_oblast(callback: CallbackQuery, state: FSMContext):
+    fsm_data = await state.get_data()
+    region = fsm_data.get("region")
     idx = int(callback.data.split(":")[1])
-    oblast = data.OBLAST[idx]
+    oblast = data.OBLAST.get(region, [])[idx]
     await state.update_data(oblast=oblast)
 
+    okrug_list = data.OKRUG.get(oblast, [])
     await state.set_state(AddStates.choosing_okrug)
     await callback.message.edit_text(
         f"Область: {oblast}\n\n7️⃣ Выберите округ:",
-        reply_markup=build_paginated_keyboard(data.OKRUG, "okrug"),
+        reply_markup=build_paginated_keyboard(okrug_list, "okrug"),
     )
     await safe_answer(callback)
 
 
 @router.callback_query(AddStates.choosing_okrug, F.data.startswith("okrug:"))
 async def add_okrug(callback: CallbackQuery, state: FSMContext):
+    fsm_data = await state.get_data()
+    oblast = fsm_data.get("oblast")
     idx = int(callback.data.split(":")[1])
-    okrug = data.OKRUG[idx]
+    okrug = data.OKRUG.get(oblast, [])[idx]
     await state.update_data(okrug=okrug)
 
+    rayon_list = data.get_rayons(okrug)
     await state.set_state(AddStates.choosing_rayon)
     await callback.message.edit_text(
         f"Округ: {okrug}\n\n8️⃣ Выберите район:",
-        reply_markup=build_paginated_keyboard(data.RAYON, "rayon"),
+        reply_markup=build_paginated_keyboard(rayon_list, "rayon"),
     )
     await safe_answer(callback)
 
 
 @router.callback_query(AddStates.choosing_rayon, F.data.startswith("rayon:"))
 async def add_rayon(callback: CallbackQuery, state: FSMContext):
+    fsm_data = await state.get_data()
     idx = int(callback.data.split(":")[1])
-    rayon = data.RAYON[idx]
+    rayon = data.get_rayons(fsm_data.get("okrug", ""))[idx]
     await state.update_data(rayon=rayon)
 
     await state.set_state(AddStates.choosing_format)
@@ -538,7 +676,7 @@ async def add_category(callback: CallbackQuery, state: FSMContext):
     category = data.CATEGORY[idx]
     await state.update_data(category=category)
 
-    delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
+    delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""))
     await state.set_state(AddStates.choosing_delivery)
     await callback.message.edit_text(
         f"Категория: {category}\n\n1️⃣3️⃣ Выберите код доставщика:",
@@ -551,7 +689,7 @@ async def add_category(callback: CallbackQuery, state: FSMContext):
 async def add_delivery(callback: CallbackQuery, state: FSMContext):
     fsm_data = await state.get_data()
     idx = int(callback.data.split(":")[1])
-    delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""), fsm_data.get("okrug", ""))
+    delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""))
     delivery_code = delivery_list[idx]
     await state.update_data(deliveryCode=delivery_code, visit_days=[])
 

@@ -89,6 +89,9 @@ async def handle_api(request: web.Request) -> web.Response:
             if result.get("success"):
                 await notify.notify_admin(notify.build_add_text(payload))
 
+        elif action == "search_similar":
+            result = await api.search_similar_points(payload.get("name", ""))
+
         elif action == "change_password":
             result = await api.change_password(
                 login_value=payload.get("login", ""),

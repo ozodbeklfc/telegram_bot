@@ -23,6 +23,7 @@ class AttachStates(StatesGroup):
 
 class AddStates(StatesGroup):
     waiting_client_name = State()
+    confirm_similar = State()      # «такая точка уже есть?» — да/нет
     waiting_geo = State()
     waiting_address = State()
     waiting_phone = State()

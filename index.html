@@ -149,6 +149,36 @@
         </form>
     </div>
 
+    <!-- ОКНО: ПАССИВНАЯ ТОЧКА -->
+    <div id="passive-overlay" class="map-overlay">
+        <div class="map-box" style="max-width:420px;">
+            <h3 style="color:#c0392b;">🔴 Точка пассивная</h3>
+            <div style="padding:0 16px 6px; font-size:15px; line-height:1.5;">
+                <div id="passive-name" style="font-weight:600; margin-bottom:4px;"></div>
+                <div id="passive-inn" style="color:#666; font-size:14px;"></div>
+                <p style="margin:14px 0 0;">Обратитесь в финансовый отдел.</p>
+            </div>
+            <div class="map-actions">
+                <button type="button" class="map-confirm" id="passive-ok">Понятно</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ОКНО: НАЙДЕНА ПОХОЖАЯ ТОЧКА -->
+    <div id="similar-overlay" class="map-overlay">
+        <div class="map-box" style="max-width:460px;">
+            <h3>⚠️ Такая точка уже есть в базе?</h3>
+            <div class="map-hint">
+                Вы вводите: <b id="similar-entered"></b><br>
+                В базе найдены похожие названия:
+            </div>
+            <div id="similar-list" style="padding:0 16px; overflow-y:auto;"></div>
+            <div class="map-actions">
+                <button type="button" class="map-cancel" id="similar-no">Нет, это новая точка</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ОКНО ВЫБОРА ТОЧКИ НА КАРТЕ -->
     <div id="map-overlay" class="map-overlay">
         <div class="map-box">
@@ -915,7 +945,8 @@
             "QORAQALPOQISTON": ["NUK-D3", "NUK-D2", "NUK-D1"],
             "FARGONA VILOYATI": ["FAR-D1", "FAR-D2", "FAR-D3", "FAR-D4", "FAR-D5","QOQ-D1", "QOQ-D2", "QOQ-D3", "QOQ-D4", "QOQ-D5"],
             "ANDIJON VILOYATI": ["AND-D1", "AND-D2", "AND-D3", "AND-D4", "AND-D5"],
-            "NAMANGAN VILOYATI": ["NAM-D1", "NAM-D2", "NAM-D3", "NAM-D4", "NAM-D5"]
+            "NAMANGAN VILOYATI": ["NAM-D1", "NAM-D2", "NAM-D3", "NAM-D4", "NAM-D5"],
+            "DEFAULT": ["DLV-101", "DLV-102", "DLV-103"]
         }
     };
 
@@ -1191,7 +1222,10 @@
             const result = await response.json();
 
             if (result.success) {
-                if (result.exists) {
+                if (result.exists && result.status === 1) {
+                    // Пассивная точка: работать с ней нельзя, остаёмся на этом экране
+                    showPassive(result.pointName, innValue);
+                } else if (result.exists) {
                     document.getElementById('attachPointName').value = result.pointName;
                     document.getElementById('attachPointCode').value = result.pointCode;
                     showScreen('screen-attach');
@@ -1528,6 +1562,102 @@
     });
 
     const clientNameInput = document.getElementById('clientName');
+    // ---------- ПРОВЕРКА ПОХОЖИХ НАЗВАНИЙ ----------
+    // Агент мог ошибиться в ИНН и добавлять точку, которая уже есть в базе
+    // под чуть другим написанием ("MUHAYO TRADE" против "MUXAYYO TRADE").
+    // Проверяем, когда он уходит с поля названия, чтобы не дёргать сервер
+    // на каждую букву.
+    let similarChecked = "";   // для какого названия уже показывали окно
+
+    clientNameInput.addEventListener('blur', async function() {
+        const name = this.value.trim();
+        if (name.length < 3 || name === similarChecked) return;
+
+        try {
+            const res = await fetch(WEB_APP_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({ action: 'search_similar', name: name })
+            });
+            const result = await res.json();
+            if (result.success && result.matches && result.matches.length) {
+                similarChecked = name;
+                showSimilar(name, result.matches);
+            }
+        } catch (err) {
+            // Проверка вспомогательная: если сервер недоступен, просто
+            // не мешаем агенту заполнять форму дальше
+            console.warn("Проверка похожих названий не удалась:", err);
+        }
+    });
+
+    function showPassive(name, inn) {
+        document.getElementById('passive-name').textContent = name || "";
+        document.getElementById('passive-inn').textContent = "ИНН: " + inn;
+        document.getElementById('passive-overlay').classList.add('active');
+    }
+
+    document.getElementById('passive-ok').addEventListener('click', function() {
+        document.getElementById('passive-overlay').classList.remove('active');
+        document.getElementById('checkInnInput').value = '';
+        document.getElementById('checkInnInput').focus();
+    });
+
+    function showSimilar(entered, matches) {
+        document.getElementById('similar-entered').textContent = entered;
+
+        const list = document.getElementById('similar-list');
+        list.innerHTML = '';
+
+        matches.forEach(m => {
+            const box = document.createElement('div');
+            box.style.cssText = 'border:1px solid #dee2e6; border-radius:8px; padding:10px; margin-bottom:8px;';
+
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight:600; margin-bottom:2px;';
+            title.textContent = m.pointName;
+            box.appendChild(title);
+
+            const info = document.createElement('div');
+            info.style.cssText = 'color:#666; font-size:13px; margin-bottom:8px;';
+            info.textContent = 'ИНН: ' + m.inn + (m.status === 1 ? '  🔴 пассивная' : '');
+            box.appendChild(info);
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'map-confirm';
+            btn.style.cssText = 'width:100%; padding:10px; border:none; border-radius:6px; font-weight:600; cursor:pointer;';
+            btn.textContent = 'Да, это она';
+            btn.addEventListener('click', () => chooseSimilar(m));
+            box.appendChild(btn);
+
+            list.appendChild(box);
+        });
+
+        document.getElementById('similar-overlay').classList.add('active');
+    }
+
+    function chooseSimilar(point) {
+        document.getElementById('similar-overlay').classList.remove('active');
+
+        if (point.status === 1) {
+            // Точка нашлась, но она пассивная — прикреплять нельзя
+            showPassive(point.pointName, point.inn);
+            showScreen('screen-inn-check');
+            return;
+        }
+
+        // Переходим к прикреплению найденной точки
+        document.getElementById('attachPointName').value = point.pointName;
+        document.getElementById('attachPointCode').value = point.pointCode;
+        showScreen('screen-attach');
+    }
+
+    document.getElementById('similar-no').addEventListener('click', function() {
+        // Продолжаем добавление — окно больше не покажем для этого названия
+        document.getElementById('similar-overlay').classList.remove('active');
+    });
+
     clientNameInput.addEventListener('input', function(e) {
         let val = e.target.value.toUpperCase();
         const stopwords = /\b(OOO|MCHJ|YATT|XK|ООО|МЧЖ|ЯТТ)\b/g;
