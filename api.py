@@ -217,14 +217,13 @@ MAX_VISIT_DAYS = 3
 
 def agent_brand(agent: str) -> str:
     """
-    Бренд агента — буквенная часть логина: OR0104 → OR, BAH001 → BAH.
+    Бренд агента — РОВНО первые два символа логина.
 
-    Раньше брались ровно два первых символа, но в базе есть агенты с
-    трёхбуквенным префиксом (BAH001), и у них бренд получался «BA» —
-    тогда BAH001 и BAN001 считались бы коллегами по бренду.
+    Логины бывают разной длины (OR0114, ORTP0101, UL0112, ULTP0101), но
+    бренд определяют именно две первые буквы: UL0112 и ULTP0101 — один и
+    тот же бренд UL, и на одной точке они стоять не могут.
     """
-    m = re.match(r"^[A-Za-z]+", (agent or "").strip())
-    return m.group(0).upper() if m else ""
+    return (agent or "").strip()[:2].upper()
 
 
 def split_days(visit_day: str) -> list[str]:
@@ -389,13 +388,15 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
+            # Каждый день визита — отдельная строка: так их удобно
+            # фильтровать и считать, не разбирая текст через запятую
+            await conn.executemany(
                 """
                 INSERT INTO attachments
                     (point_code, point_name, agent_brand, agent, visit_day)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                point_code, point_name, brand, agent, ", ".join(days),
+                [(point_code, point_name, brand, agent, day) for day in days],
             )
     except Exception as e:
         return _db_error(e)
