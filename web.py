@@ -89,6 +89,11 @@ async def handle_api(request: web.Request) -> web.Response:
             if result.get("success"):
                 await notify.notify_admin(notify.build_add_text(payload))
 
+        elif action == "check_attach":
+            result = await api.check_attach_allowed(
+                payload.get("pointCode", ""), payload.get("agent", "")
+            )
+
         elif action == "search_similar":
             result = await api.search_similar_points(payload.get("name", ""))
 

@@ -250,8 +250,9 @@ async def render_step(target_state, message: Message, state: FSMContext):
         await send_add_summary(message, state)
     elif s == AttachStates.choosing_days.state:
         await message.answer(
-            "Выберите дни визита (можно до 3):",
-            reply_markup=build_days_keyboard(fsm_data.get("visit_days", [])),
+            "Выберите дни визита:",
+            reply_markup=build_days_keyboard(fsm_data.get("visit_days", []),
+                                             fsm_data.get("taken_days", [])),
         )
     elif s == AttachStates.confirm.state:
         await send_attach_summary(message, state)
@@ -380,6 +381,11 @@ async def process_inn(message: Message, state: FSMContext):
 
         result = {**result, **active[0]}
 
+        if result.get("status") != 1:
+            await checking_msg.delete()
+            await start_attach(message, state, active[0], "✅ Точка найдена в базе!\n\n")
+            return
+
         if result.get("status") == 1:
             # Пассивная точка: работать с ней агент не может, отправляем
             # обратно к вводу ИНН — состояние не меняем
@@ -392,19 +398,6 @@ async def process_inn(message: Message, state: FSMContext):
             )
             return
 
-        await state.update_data(
-            point_code=result.get("pointCode"),
-            point_name=result.get("pointName"),
-            visit_days=[],
-        )
-        await state.set_state(AttachStates.choosing_days)
-        await checking_msg.edit_text(
-            f"✅ Точка найдена в базе!\n\n"
-            f"🏪 Название: {result.get('pointName')}\n"
-            f"🔢 Код: {result.get('pointCode')}\n\n"
-            f"Выберите дни визита (можно до 3):"
-        )
-        await message.answer("👇", reply_markup=build_days_keyboard([]))
     else:
         await state.update_data(inn=inn_value)
         await state.set_state(AddStates.waiting_client_name)
@@ -454,6 +447,71 @@ async def add_client_name(message: Message, state: FSMContext):
     )
 
 
+async def start_attach(message: Message, state: FSMContext, point: dict, header: str = "") -> bool:
+    """
+    Общая точка входа в прикрепление: проверяет правила и, если всё в порядке,
+    показывает выбор дней. Используется во всех трёх местах, откуда можно
+    попасть на прикрепление (ИНН с одним кодом, выбор кода, похожее название),
+    чтобы правила не разъехались между ними.
+
+    Возвращает False, если прикрепление запрещено.
+    """
+    fsm_data = await state.get_data()
+    agent = fsm_data.get("agent", "")
+
+    check = await api.check_attach_allowed(point["pointCode"], agent)
+
+    if not check.get("success"):
+        await message.answer(f"❌ {check.get('message')}")
+        return False
+
+    if not check.get("allowed"):
+        if check.get("reason") == "brand":
+            await message.answer(
+                f"⛔️ В ЭТОЙ ТОЧКЕ ЗАКРЕПЛЁН ДРУГОЙ АГЕНТ ВАШЕГО БРЕНДА\n\n"
+                f"🏪 {point['pointName']}\n"
+                f"👤 Агент: {check.get('blockedBy')}\n\n"
+                f"Введите другой ИНН:"
+            )
+        else:
+            days = ", ".join(check.get("myDays", []))
+            await message.answer(
+                f"⛔️ У ВАС УЖЕ 3 ДНЯ В ЭТОЙ ТОЧКЕ\n\n"
+                f"🏪 {point['pointName']}\n"
+                f"📅 Ваши дни: {days}\n\n"
+                f"Больше дней добавить нельзя. Введите другой ИНН:"
+            )
+        await state.set_data({"agent": agent})
+        await ask_inn(message, state)
+        return False
+
+    taken = check.get("myDays", [])
+    remaining = check.get("remaining", 3)
+
+    await state.set_data({
+        "agent": agent,
+        "point_code": point["pointCode"],
+        "point_name": point["pointName"],
+        "visit_days": [],
+        "taken_days": taken,
+        "remaining_days": remaining,
+    })
+    await state.set_state(AttachStates.choosing_days)
+
+    note = ""
+    if taken:
+        note = (f"\n\n📅 У вас уже занято: {', '.join(taken)}\n"
+                f"Можно выбрать ещё {remaining}.")
+
+    await message.answer(
+        f"{header}🏪 {point['pointName']}\n"
+        f"🔢 Код: {point['pointCode']}{note}\n\n"
+        f"Выберите дни визита:",
+        reply_markup=build_days_keyboard([], taken),
+    )
+    return True
+
+
 def build_points_text(inn: str, points: list) -> str:
     """
     Полные названия выводим текстом, а не на кнопках: у таких точек
@@ -488,19 +546,8 @@ async def choose_point(callback: CallbackQuery, state: FSMContext):
         return
 
     point = points[idx]
-    await state.update_data(
-        point_code=point["pointCode"],
-        point_name=point["pointName"],
-        visit_days=[],
-        inn_points=None,
-    )
-    await state.set_state(AttachStates.choosing_days)
-    await callback.message.edit_text(
-        f"🏪 {point['pointName']}\n"
-        f"🔢 Код: {point['pointCode']}\n\n"
-        f"Выберите дни визита (можно до 3):"
-    )
-    await callback.message.answer("👇", reply_markup=build_days_keyboard([]))
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await start_attach(callback.message, state, point)
     await safe_answer(callback)
 
 
@@ -558,22 +605,8 @@ async def similar_yes(callback: CallbackQuery, state: FSMContext):
         return
 
     # Переходим к прикреплению найденной точки
-    agent = fsm_data.get("agent")
-    await state.set_data({
-        "agent": agent,
-        "point_code": point["pointCode"],
-        "point_name": point["pointName"],
-        "visit_days": [],
-    })
-    await state.set_state(AttachStates.choosing_days)
-    await callback.message.edit_text(
-        f"✅ Прикрепляем существующую точку:\n\n"
-        f"🏪 {point['pointName']}\n"
-        f"🔢 Код: {point['pointCode']}\n"
-        f"🧾 ИНН: {point['inn']}\n\n"
-        f"Выберите дни визита (можно до 3):"
-    )
-    await callback.message.answer("👇", reply_markup=build_days_keyboard([]))
+    await start_attach(callback.message, state, point,
+                       "✅ Прикрепляем существующую точку:\n\n")
     await safe_answer(callback)
 
 
@@ -820,17 +853,31 @@ async def toggle_day(callback: CallbackQuery, state: FSMContext):
 
     fsm_data = await state.get_data()
     selected = fsm_data.get("visit_days", [])
+    taken = fsm_data.get("taken_days", [])
+    # В сценарии добавления новой точки ограничений нет — там всегда 3 дня
+    remaining = fsm_data.get("remaining_days", 3)
+
+    if day in taken:
+        await safe_answer(callback, f"{day} — этот день у вас уже занят на этой точке",
+                          show_alert=True)
+        return
 
     if day in selected:
         selected.remove(day)
-    elif len(selected) < 3:
+    elif len(selected) < remaining:
         selected.append(day)
     else:
-        await safe_answer(callback, "Можно выбрать максимум 3 дня", show_alert=True)
+        if remaining < 3:
+            await safe_answer(
+                callback,
+                f"Можно выбрать ещё {remaining} — остальные дни на этой точке уже ваши",
+                show_alert=True)
+        else:
+            await safe_answer(callback, "Можно выбрать максимум 3 дня", show_alert=True)
         return
 
     await state.update_data(visit_days=selected)
-    await callback.message.edit_reply_markup(reply_markup=build_days_keyboard(selected))
+    await callback.message.edit_reply_markup(reply_markup=build_days_keyboard(selected, taken))
     await safe_answer(callback)
 
 

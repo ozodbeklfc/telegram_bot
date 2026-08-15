@@ -45,3 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_client_base_name_trgm
 -- ---------- Проверка после загрузки ----------
 --   SELECT status, count(*) FROM client_base GROUP BY status;
 --   SELECT count(*) FROM client_base WHERE inn IS NULL;
+
+-- Проверка правил прикрепления идёт при каждом вводе ИНН — нужен индекс
+CREATE INDEX IF NOT EXISTS idx_attachments_point ON attachments (point_code);
+CREATE INDEX IF NOT EXISTS idx_attachments_agent ON attachments (agent);

@@ -37,14 +37,24 @@ def build_paginated_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_days_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
+def build_days_keyboard(selected: list[str], taken: list[str] = None) -> InlineKeyboardMarkup:
     """
-    Мультивыбор дней недели. Максимум 3 дня (как в исходной форме).
-    Выбранные дни помечаются галочкой.
+    Мультивыбор дней недели. Максимум 3 дня на точку.
+
+    selected — выбранные сейчас дни (помечаются галочкой)
+    taken    — дни, уже занятые этим же агентом на этой точке по прошлым
+               прикреплениям. Помечаются замком и повторно не выбираются:
+               иначе агент занял бы один день дважды и упёрся в лимит зря.
     """
+    taken = taken or []
     rows = []
     for idx, day in enumerate(DAYS):
-        mark = "✅ " if day in selected else ""
+        if day in taken:
+            mark = "🔒 "
+        elif day in selected:
+            mark = "✅ "
+        else:
+            mark = ""
         rows.append([InlineKeyboardButton(text=f"{mark}{day}", callback_data=f"day:{idx}")])
 
     done_text = f"➡️ Готово ({len(selected)} выбрано)" if selected else "➡️ Готово"

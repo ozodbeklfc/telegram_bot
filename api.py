@@ -211,6 +211,85 @@ async def check_inn(inn: str) -> dict:
     }
 
 
+# Сколько дней визита агент может занять на одной точке
+MAX_VISIT_DAYS = 3
+
+
+def agent_brand(agent: str) -> str:
+    """Бренд агента — первые два символа логина: OR0104 → OR."""
+    return (agent or "")[:2].upper()
+
+
+def split_days(visit_day: str) -> list[str]:
+    """'Понедельник, Среда' → ['Понедельник', 'Среда']"""
+    return [d.strip() for d in (visit_day or "").split(",") if d.strip()]
+
+
+async def check_attach_allowed(point_code: str, agent: str) -> dict:
+    """
+    Можно ли агенту прикрепиться к этой точке.
+
+    Два правила:
+      1. Точка занята другим агентом того же бренда — прикрепление запрещено
+         (OR0104 блокирует OR0111, но не UL1111).
+      2. У самого агента на точке не больше MAX_VISIT_DAYS дней суммарно.
+         Если уже занято два дня, третий добавить можно, четвёртый — нет.
+
+    Возвращает:
+      allowed     — можно ли продолжать
+      reason      — 'brand' | 'limit' | None
+      blockedBy   — логин агента, занявшего точку (для reason='brand')
+      myDays      — дни, которые агент уже занял на этой точке
+      remaining   — сколько дней ещё можно выбрать
+    """
+    brand = agent_brand(agent)
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT agent, visit_day
+                  FROM attachments
+                 WHERE point_code = $1
+                """,
+                point_code,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    my_days, other_agent = [], None
+    for r in rows:
+        row_agent = (r["agent"] or "").upper()
+        if row_agent == (agent or "").upper():
+            my_days.extend(split_days(r["visit_day"]))
+        elif agent_brand(row_agent) == brand and brand:
+            # Точку уже занял коллега по бренду
+            other_agent = other_agent or row_agent
+
+    # Один и тот же день мог попасть в две записи — считаем уникальные
+    my_days = list(dict.fromkeys(my_days))
+
+    if other_agent:
+        return {
+            "success": True, "allowed": False, "reason": "brand",
+            "blockedBy": other_agent, "myDays": my_days,
+            "remaining": 0,
+        }
+
+    remaining = MAX_VISIT_DAYS - len(my_days)
+    if remaining <= 0:
+        return {
+            "success": True, "allowed": False, "reason": "limit",
+            "blockedBy": None, "myDays": my_days, "remaining": 0,
+        }
+
+    return {
+        "success": True, "allowed": True, "reason": None,
+        "blockedBy": None, "myDays": my_days, "remaining": remaining,
+    }
+
+
 async def search_similar_points(name: str, limit: int = SIMILAR_LIMIT) -> dict:
     """
     Ищет в базе точки с похожим названием.
@@ -260,8 +339,7 @@ async def search_similar_points(name: str, limit: int = SIMILAR_LIMIT) -> dict:
 # ======================================================================
 
 async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -> dict:
-    # Бренд агента — первые два символа логина, как это делалось в Apps Script
-    agent_brand = (agent or "")[:2].upper()
+    brand = agent_brand(agent)
 
     try:
         pool = await get_pool()
@@ -272,7 +350,7 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -
                     (point_code, point_name, agent_brand, agent, visit_day)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                point_code, point_name, agent_brand, agent, visit_day,
+                point_code, point_name, brand, agent, visit_day,
             )
     except Exception as e:
         return _db_error(e)

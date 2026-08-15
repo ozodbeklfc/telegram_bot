@@ -164,6 +164,20 @@
         </div>
     </div>
 
+    <!-- ОКНО: ПРИКРЕПЛЕНИЕ ЗАПРЕЩЕНО -->
+    <div id="block-overlay" class="map-overlay">
+        <div class="map-box" style="max-width:420px;">
+            <h3 id="block-title" style="color:#c0392b;">⛔️ Прикрепление невозможно</h3>
+            <div style="padding:0 16px 6px; font-size:15px; line-height:1.5;">
+                <div id="block-name" style="font-weight:600; margin-bottom:4px;"></div>
+                <div id="block-text" style="color:#444;"></div>
+            </div>
+            <div class="map-actions">
+                <button type="button" class="map-confirm" id="block-ok">Понятно</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ОКНО: У ИНН НЕСКОЛЬКО КОДОВ КОНТРАГЕНТА -->
     <div id="point-overlay" class="map-overlay">
         <div class="map-box" style="max-width:460px;">
@@ -240,6 +254,7 @@
         <button type="button" class="btn-back" onclick="showScreen('screen-inn-check')">← Назад к ИНН</button>
         <h2>Прикрепление торговой точки</h2>
         <p class="subtitle">Точка найдена в базе. Агент: <strong id="attach-agent-label">OR0111</strong></p>
+        <div id="attach-note" class="status-message" style="display:none; background:#fff3cd; color:#856404;"></div>
         
         <form id="attach-form" autocomplete="off">
             <div class="form-group">
@@ -383,6 +398,7 @@
                         <option value="Среда">Среда</option>
                         <option value="Четверг">Четверг</option>
                         <option value="Пятница">Пятница</option>
+                        <option value="Суббота">Суббота</option>
                     </select>
                 </div>
             </div>
@@ -396,6 +412,7 @@
                     <option value="Среда">Среда</option>
                     <option value="Четверг">Четверг</option>
                     <option value="Пятница">Пятница</option>
+                    <option value="Суббота">Суббота</option>
                 </select>
             </div>
 
@@ -408,6 +425,7 @@
                     <option value="Среда">Среда</option>
                     <option value="Четверг">Четверг</option>
                     <option value="Пятница">Пятница</option>
+                    <option value="Суббота">Суббота</option>
                 </select>
             </div>
 
@@ -1247,9 +1265,7 @@
                     // У одного ИНН несколько кодов контрагента — выбирает агент
                     showPointPicker(innValue, active);
                 } else if (result.exists) {
-                    document.getElementById('attachPointName').value = active[0].pointName;
-                    document.getElementById('attachPointCode').value = active[0].pointCode;
-                    showScreen('screen-attach');
+                    await goToAttach(active[0]);
                 } else {
                     document.getElementById('inn').value = innValue;
                     showScreen('screen-add');
@@ -1637,12 +1653,10 @@
             btn.className = 'map-confirm';
             btn.style.cssText = 'width:100%; padding:10px; border:none; border-radius:6px; font-weight:600; cursor:pointer;';
             btn.textContent = 'Выбрать';
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', async () => {
                 document.getElementById('point-overlay').classList.remove('active');
-                document.getElementById('attachPointName').value = p.pointName;
-                document.getElementById('attachPointCode').value = p.pointCode;
                 document.getElementById('checkInnInput').value = '';
-                showScreen('screen-attach');
+                await goToAttach(p);
             });
             box.appendChild(btn);
 
@@ -1654,6 +1668,93 @@
 
     document.getElementById('point-cancel').addEventListener('click', function() {
         document.getElementById('point-overlay').classList.remove('active');
+    });
+
+    // ---------- ПЕРЕХОД К ПРИКРЕПЛЕНИЮ С ПРОВЕРКОЙ ПРАВИЛ ----------
+    // Единственная точка входа: сюда ведут все три пути (ИНН с одним кодом,
+    // выбор кода, подтверждение похожего названия), чтобы правила не
+    // разъехались между ними.
+    async function goToAttach(point) {
+        let check;
+        try {
+            const res = await fetch(WEB_APP_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                    action: 'check_attach',
+                    pointCode: point.pointCode,
+                    agent: currentUser
+                })
+            });
+            check = await res.json();
+        } catch (err) {
+            alert("Ошибка связи с сервером. Попробуйте ещё раз.");
+            return;
+        }
+
+        if (!check.success) {
+            alert(check.message || "Ошибка проверки прикрепления");
+            return;
+        }
+
+        if (!check.allowed) {
+            if (check.reason === 'brand') {
+                showBlocked("В этой точке закреплён другой агент вашего бренда",
+                            point.pointName,
+                            "Агент: " + check.blockedBy);
+            } else {
+                showBlocked("У вас уже 3 дня в этой точке",
+                            point.pointName,
+                            "Ваши дни: " + (check.myDays || []).join(', ') +
+                            ". Больше дней добавить нельзя.");
+            }
+            showScreen('screen-inn-check');
+            return;
+        }
+
+        document.getElementById('attachPointName').value = point.pointName;
+        document.getElementById('attachPointCode').value = point.pointCode;
+        applyTakenDays(check.myDays || [], check.remaining);
+        showScreen('screen-attach');
+    }
+
+    function applyTakenDays(taken, remaining) {
+        // Дни, уже занятые этим агентом на этой точке, выбирать нельзя:
+        // иначе агент занял бы один день дважды и упёрся в лимит зря.
+        ['attachDay1', 'attachDay2', 'attachDay3'].forEach(id => {
+            const select = document.getElementById(id);
+            if (!select) return;
+            [...select.options].forEach(opt => {
+                if (!opt.value) return;
+                const isTaken = taken.includes(opt.value);
+                opt.disabled = isTaken;
+                opt.textContent = isTaken ? opt.value + ' — уже занят вами' : opt.value;
+            });
+            if (taken.includes(select.value)) select.value = '';
+        });
+
+        const note = document.getElementById('attach-note');
+        if (note) {
+            if (taken.length) {
+                note.textContent = 'У вас уже занято: ' + taken.join(', ') +
+                                   '. Можно выбрать ещё ' + remaining + '.';
+                note.style.display = 'block';
+            } else {
+                note.style.display = 'none';
+            }
+        }
+    }
+
+    function showBlocked(title, name, text) {
+        document.getElementById('block-title').textContent = '⛔️ ' + title;
+        document.getElementById('block-name').textContent = name || '';
+        document.getElementById('block-text').textContent = text || '';
+        document.getElementById('block-overlay').classList.add('active');
+    }
+
+    document.getElementById('block-ok').addEventListener('click', function() {
+        document.getElementById('block-overlay').classList.remove('active');
+        document.getElementById('checkInnInput').value = '';
     });
 
     function showPassive(name, inn) {
@@ -1702,7 +1803,7 @@
         document.getElementById('similar-overlay').classList.add('active');
     }
 
-    function chooseSimilar(point) {
+    async function chooseSimilar(point) {
         document.getElementById('similar-overlay').classList.remove('active');
 
         if (point.status === 1) {
@@ -1712,10 +1813,7 @@
             return;
         }
 
-        // Переходим к прикреплению найденной точки
-        document.getElementById('attachPointName').value = point.pointName;
-        document.getElementById('attachPointCode').value = point.pointCode;
-        showScreen('screen-attach');
+        await goToAttach(point);
     }
 
     document.getElementById('similar-no').addEventListener('click', function() {

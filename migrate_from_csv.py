@@ -38,10 +38,40 @@ REPORT_FILE = "otchet_migracii.csv"
 # загружаются, но попадают в отчёт — найти такую точку агент не сможет.
 VALID_INN_LENGTHS = (9, 14)
 
+# Какое значение в колонке статуса означает ПАССИВНУЮ точку.
+# В выгрузке колонка называется ACTIVE, но единица в ней стоит именно
+# у пассивных точек. Если однажды логика поменяется — правится здесь.
+PASSIVE_VALUE = "1"
+
+# Возможные названия колонки со статусом
+STATUS_HEADERS = ("active", "status", "статус", "актив")
+
 
 def chunked(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
+
+
+def looks_like_header(row) -> bool:
+    """
+    Первая строка — заголовок?
+
+    По названиям колонок ориентироваться нельзя: в разных выгрузках они
+    то русские («Код Контрагента»), то английские («ClCode», «Taxnr»).
+    Зато код контрагента ВСЕГДА содержит цифры (120.01.101.0266), а любой
+    заголовок — нет. На это и опираемся.
+    """
+    if not row or not row[0].strip():
+        return False
+    return not any(ch.isdigit() for ch in row[0])
+
+
+def find_status_column(header) -> int:
+    """Номер колонки со статусом, или -1 если её нет."""
+    for i, name in enumerate(header):
+        if name.strip().lower() in STATUS_HEADERS:
+            return i
+    return 3 if len(header) > 3 else -1
 
 
 def read_csv_rows(path: str):
@@ -169,17 +199,22 @@ def migrate_client_base(conn, path: str = "client_base.csv"):
     rows, delimiter = read_csv_rows(path)
     print(f"   Разделитель колонок: '{delimiter}'")
 
-    # Заголовок: Код Контрагента ; Название ; ИНН ; Статус
-    if rows and len(rows[0]) > 2 and rows[0][2].strip().lower() in ("inn", "инн"):
+    # Заголовок: "Код Контрагента;Название;ИНН;Статус" или "ClCode;Title;Taxnr;ACTIVE"
+    if rows and looks_like_header(rows[0]):
         header, rows, offset = rows[0], rows[1:], 2
+        print(f"   Заголовок: {' | '.join(header)}")
     else:
         header, offset = [], 1
+        print("   ⚠️  Заголовок не найден — первая строка считается данными")
 
-    has_status_column = len(header) > 3
+    status_col = find_status_column(header) if header else -1
+    has_status_column = status_col >= 0
     if has_status_column:
-        print("   Статус берётся из четвёртой колонки файла")
+        name = header[status_col] if status_col < len(header) else str(status_col + 1)
+        print(f"   Статус берётся из колонки «{name}»: "
+              f"{PASSIVE_VALUE} = пассивная, остальное = активная")
     else:
-        print("   Колонки «Статус» нет — пассивными считаются точки с символами в ИНН")
+        print("   Колонки со статусом нет — пассивными считаются точки с символами в ИНН")
 
     data, seen = [], {}
     passive_count = no_inn_count = skipped = 0
@@ -220,8 +255,8 @@ def migrate_client_base(conn, path: str = "client_base.csv"):
                            group="ИНН без цифр — записан NULL")
 
         # Статус: из файла, если колонка есть; иначе по символам вокруг номера
-        if has_status_column and len(row) > 3 and row[3].strip():
-            status = 1 if row[3].strip() not in ("0", "") else 0
+        if has_status_column and len(row) > status_col:
+            status = 1 if row[status_col].strip() == PASSIVE_VALUE else 0
         else:
             status = 1 if raw_inn and raw_inn != inn else 0
         if status:

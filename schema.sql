@@ -64,3 +64,7 @@ CREATE TABLE IF NOT EXISTS add_requests (
     comments      TEXT,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Проверка правил прикрепления идёт при каждом вводе ИНН — нужен индекс
+CREATE INDEX IF NOT EXISTS idx_attachments_point ON attachments (point_code);
+CREATE INDEX IF NOT EXISTS idx_attachments_agent ON attachments (agent);
