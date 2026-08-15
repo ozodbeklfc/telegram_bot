@@ -14,17 +14,19 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS client_base (
     id         SERIAL PRIMARY KEY,
-    point_code TEXT,
+    -- Уникален именно код контрагента: у одной точки бывает несколько
+    -- кодов с общим ИНН (KALINA, UNILEVER, NIVEA — разные категории)
+    point_code TEXT NOT NULL UNIQUE,
     point_name TEXT,
-    -- Только цифры: пометки вроде '306955509+' очищаются при загрузке
-    inn        TEXT NOT NULL UNIQUE,
-    -- Исходное значение из выгрузки, со всеми пометками
-    inn_raw    TEXT,
+    -- Только цифры, символы вычищаются при загрузке.
+    -- NULL — у служебных строк (DILERLER, PERSONAL ZAKAZI)
+    inn        TEXT,
     -- 0 = активная точка, 1 = пассивная (агент работать с ней не может)
     status     SMALLINT NOT NULL DEFAULT 0
 );
 
--- UNIQUE на inn уже создаёт индекс, отдельный не нужен
+-- Поиск по ИНН (то, ради чего всё затевалось)
+CREATE INDEX IF NOT EXISTS idx_client_base_inn ON client_base (inn);
 
 -- Поиск похожих названий: ловит опечатки вроде MUHAYO / MUXAYYO
 CREATE EXTENSION IF NOT EXISTS pg_trgm;

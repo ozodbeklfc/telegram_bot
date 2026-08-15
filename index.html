@@ -164,6 +164,21 @@
         </div>
     </div>
 
+    <!-- ОКНО: У ИНН НЕСКОЛЬКО КОДОВ КОНТРАГЕНТА -->
+    <div id="point-overlay" class="map-overlay">
+        <div class="map-box" style="max-width:460px;">
+            <h3>Выберите код контрагента</h3>
+            <div class="map-hint">
+                По ИНН <b id="point-inn"></b> найдено несколько кодов.
+                Это разные категории поставки одной точки.
+            </div>
+            <div id="point-list" style="padding:0 16px; overflow-y:auto;"></div>
+            <div class="map-actions">
+                <button type="button" class="map-cancel" id="point-cancel">Отмена</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ОКНО: НАЙДЕНА ПОХОЖАЯ ТОЧКА -->
     <div id="similar-overlay" class="map-overlay">
         <div class="map-box" style="max-width:460px;">
@@ -1222,12 +1237,18 @@
             const result = await response.json();
 
             if (result.success) {
-                if (result.exists && result.status === 1) {
-                    // Пассивная точка: работать с ней нельзя, остаёмся на этом экране
-                    showPassive(result.pointName, innValue);
+                const points = result.points || [];
+                const active = points.filter(p => p.status !== 1);
+
+                if (result.exists && !active.length) {
+                    // Все коды этой точки пассивные
+                    showPassive(points[0].pointName, innValue);
+                } else if (active.length > 1) {
+                    // У одного ИНН несколько кодов контрагента — выбирает агент
+                    showPointPicker(innValue, active);
                 } else if (result.exists) {
-                    document.getElementById('attachPointName').value = result.pointName;
-                    document.getElementById('attachPointCode').value = result.pointCode;
+                    document.getElementById('attachPointName').value = active[0].pointName;
+                    document.getElementById('attachPointCode').value = active[0].pointCode;
                     showScreen('screen-attach');
                 } else {
                     document.getElementById('inn').value = innValue;
@@ -1589,6 +1610,50 @@
             // не мешаем агенту заполнять форму дальше
             console.warn("Проверка похожих названий не удалась:", err);
         }
+    });
+
+    function showPointPicker(inn, points) {
+        document.getElementById('point-inn').textContent = inn;
+
+        const list = document.getElementById('point-list');
+        list.innerHTML = '';
+
+        points.forEach(p => {
+            const box = document.createElement('div');
+            box.style.cssText = 'border:1px solid #dee2e6; border-radius:8px; padding:10px; margin-bottom:8px;';
+
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight:600; margin-bottom:2px;';
+            title.textContent = p.pointName;
+            box.appendChild(title);
+
+            const info = document.createElement('div');
+            info.style.cssText = 'color:#666; font-size:13px; margin-bottom:8px;';
+            info.textContent = 'Код: ' + p.pointCode;
+            box.appendChild(info);
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'map-confirm';
+            btn.style.cssText = 'width:100%; padding:10px; border:none; border-radius:6px; font-weight:600; cursor:pointer;';
+            btn.textContent = 'Выбрать';
+            btn.addEventListener('click', () => {
+                document.getElementById('point-overlay').classList.remove('active');
+                document.getElementById('attachPointName').value = p.pointName;
+                document.getElementById('attachPointCode').value = p.pointCode;
+                document.getElementById('checkInnInput').value = '';
+                showScreen('screen-attach');
+            });
+            box.appendChild(btn);
+
+            list.appendChild(box);
+        });
+
+        document.getElementById('point-overlay').classList.add('active');
+    }
+
+    document.getElementById('point-cancel').addEventListener('click', function() {
+        document.getElementById('point-overlay').classList.remove('active');
     });
 
     function showPassive(name, inn) {

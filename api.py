@@ -161,34 +161,53 @@ def normalize_name(name: str) -> str:
 
 
 async def check_inn(inn: str) -> dict:
-    # В базе ИНН хранятся очищенными от пометок ('306955509+' → '306955509'),
-    # но на всякий случай чистим и то, что ввёл пользователь
+    """
+    Ищет точки по ИНН.
+
+    Возвращает СПИСОК: у одной точки бывает несколько кодов контрагента
+    с одним ИНН (KALINA, UNILEVER, NIVEA — разные категории поставки),
+    и агент должен выбрать нужный код сам.
+    """
     inn = re.sub(r"[^0-9]", "", inn or "")
+    if not inn:
+        return {"success": False, "message": "Введите ИНН цифрами"}
 
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
+            rows = await conn.fetch(
                 """
-                SELECT point_code, point_name, status, inn_raw
+                SELECT point_code, point_name, status
                   FROM client_base
                  WHERE inn = $1
+                 ORDER BY point_code
                 """,
                 inn,
             )
     except Exception as e:
         return _db_error(e)
 
-    if row is None:
+    if not rows:
         return {"success": True, "exists": False}
 
+    points = [
+        {
+            "pointCode": r["point_code"],
+            "pointName": r["point_name"],
+            "status": r["status"] or 0,
+        }
+        for r in rows
+    ]
+
+    first = points[0]
     return {
         "success": True,
         "exists": True,
-        "pointCode": row["point_code"],
-        "pointName": row["point_name"],
-        "status": row["status"] or 0,          # 1 = пассивная точка
-        "innRaw": row["inn_raw"] or inn,
+        "points": points,
+        # Поля ниже — для случая с единственным кодом
+        "pointCode": first["pointCode"],
+        "pointName": first["pointName"],
+        "status": first["status"],
     }
 
 

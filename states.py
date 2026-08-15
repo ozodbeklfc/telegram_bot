@@ -17,6 +17,7 @@ class ChangePasswordStates(StatesGroup):
 
 
 class AttachStates(StatesGroup):
+    choosing_point = State()       # у одного ИНН несколько кодов контрагента
     choosing_days = State()
     confirm = State()
 

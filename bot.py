@@ -348,6 +348,38 @@ async def process_inn(message: Message, state: FSMContext):
         return
 
     if result.get("exists"):
+        points = result.get("points") or [{
+            "pointCode": result.get("pointCode"),
+            "pointName": result.get("pointName"),
+            "status": result.get("status", 0),
+        }]
+        active = [p for p in points if p.get("status") != 1]
+
+        if not active:
+            # Все коды этой точки пассивные
+            first = points[0]
+            await checking_msg.edit_text(
+                f"🔴 ЭТА ТОЧКА ПАССИВНАЯ\n\n"
+                f"🏪 {first['pointName']}\n"
+                f"🧾 ИНН: {inn_value}\n\n"
+                f"Обратитесь в финансовый отдел.\n\n"
+                f"Можете ввести другой ИНН:"
+            )
+            return
+
+        if len(active) > 1:
+            # У одного ИНН несколько кодов контрагента (KALINA, UNILEVER,
+            # NIVEA...) — какой именно прикреплять, решает агент
+            await state.update_data(inn_points=active)
+            await state.set_state(AttachStates.choosing_point)
+            await checking_msg.edit_text(
+                build_points_text(inn_value, active),
+                reply_markup=build_points_keyboard(active),
+            )
+            return
+
+        result = {**result, **active[0]}
+
         if result.get("status") == 1:
             # Пассивная точка: работать с ней агент не может, отправляем
             # обратно к вводу ИНН — состояние не меняем
@@ -420,6 +452,56 @@ async def add_client_name(message: Message, state: FSMContext):
         f"(необязательно быть там физически), затем нажмите «Отправить геопозицию».",
         reply_markup=ReplyKeyboardRemove(),
     )
+
+
+def build_points_text(inn: str, points: list) -> str:
+    """
+    Полные названия выводим текстом, а не на кнопках: у таких точек
+    различие в самом конце названия (KALINA / UNILEVER / NIVEA), а Telegram
+    обрезает длинные подписи кнопок — на них все варианты выглядели бы
+    одинаково.
+    """
+    lines = [f"✅ По ИНН {inn} найдено кодов: {len(points)}", ""]
+    for i, p in enumerate(points, start=1):
+        lines.append(f"{i}. {p['pointName']}")
+        lines.append(f"    🔢 {p['pointCode']}")
+    lines += ["", "Выберите нужный номер:"]
+    return "\n".join(lines)
+
+
+def build_points_keyboard(points: list) -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(text=str(i + 1), callback_data=f"pt:{i}")
+               for i in range(len(points))]
+    # По 4 номера в ряд, чтобы кнопки оставались крупными
+    rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(AttachStates.choosing_point, F.data.startswith("pt:"))
+async def choose_point(callback: CallbackQuery, state: FSMContext):
+    idx = int(callback.data.split(":")[1])
+    fsm_data = await state.get_data()
+    points = fsm_data.get("inn_points", [])
+
+    if idx >= len(points):
+        await safe_answer(callback, "Список устарел, введите ИНН заново", show_alert=True)
+        return
+
+    point = points[idx]
+    await state.update_data(
+        point_code=point["pointCode"],
+        point_name=point["pointName"],
+        visit_days=[],
+        inn_points=None,
+    )
+    await state.set_state(AttachStates.choosing_days)
+    await callback.message.edit_text(
+        f"🏪 {point['pointName']}\n"
+        f"🔢 Код: {point['pointCode']}\n\n"
+        f"Выберите дни визита (можно до 3):"
+    )
+    await callback.message.answer("👇", reply_markup=build_days_keyboard([]))
+    await safe_answer(callback)
 
 
 def build_similar_text(entered: str, matches: list) -> str:
