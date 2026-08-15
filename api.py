@@ -216,8 +216,15 @@ MAX_VISIT_DAYS = 3
 
 
 def agent_brand(agent: str) -> str:
-    """Бренд агента — первые два символа логина: OR0104 → OR."""
-    return (agent or "")[:2].upper()
+    """
+    Бренд агента — буквенная часть логина: OR0104 → OR, BAH001 → BAH.
+
+    Раньше брались ровно два первых символа, но в базе есть агенты с
+    трёхбуквенным префиксом (BAH001), и у них бренд получался «BA» —
+    тогда BAH001 и BAN001 считались бы коллегами по бренду.
+    """
+    m = re.match(r"^[A-Za-z]+", (agent or "").strip())
+    return m.group(0).upper() if m else ""
 
 
 def split_days(visit_day: str) -> list[str]:

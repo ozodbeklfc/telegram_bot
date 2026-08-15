@@ -49,8 +49,11 @@ TURKISH_LETTERS = str.maketrans({
 # Возможные названия колонки с агентом
 AGENT_HEADERS = ("agent", "агент", "temsilci", "kod agenta", "код агента")
 
-# Логин агента выглядит как две буквы и цифры: OR0104, UL1111
-AGENT_PATTERN = re.compile(r"^[A-Za-z]{2}\d{2,6}$")
+# Логин агента: буквы и цифры — OR0104, UL1111, BAH001
+AGENT_PATTERN = re.compile(r"^[A-Za-z]{2,5}\d{2,6}$")
+
+# Код контрагента: цифры с точками — 120.01.101.0267
+CODE_PATTERN = re.compile(r"^\d[\d.]{4,}$")
 
 
 def normalize_day(raw: str) -> str | None:
@@ -74,20 +77,60 @@ def looks_like_header(row) -> bool:
     return bool(row and row[0].strip()) and not any(c.isdigit() for c in row[0])
 
 
-def find_agent_column(header, rows) -> int:
-    """Ищет колонку с агентом: сначала по названию, затем по виду значений."""
-    for i, name in enumerate(header):
-        if name.strip().lower() in AGENT_HEADERS:
-            return i
+def detect_columns(header, rows) -> dict:
+    """
+    Определяет, что в какой колонке лежит, по САМИМ ЗНАЧЕНИЯМ, а не по
+    порядку: в разных выгрузках агент стоит то первым столбцом, то последним.
 
-    # Названия колонок могут быть любыми — смотрим на сами данные
-    width = max((len(r) for r in rows[:200]), default=0)
+    Признаки однозначные:
+      код контрагента — цифры с точками (120.01.101.0267)
+      агент           — буквы + цифры (OR0104, BAH001)
+      день визита     — распознаётся словарём турецких дней
+      название        — то, что осталось
+    """
+    width = max((len(r) for r in rows[:300]), default=0)
+    scores = []
+
     for col in range(width):
-        values = [r[col].strip() for r in rows[:200] if len(r) > col and r[col].strip()]
-        if values and sum(bool(AGENT_PATTERN.match(v)) for v in values) > len(values) * 0.8:
-            return col
+        values = [r[col].strip() for r in rows[:300] if len(r) > col and r[col].strip()]
+        if not values:
+            scores.append({"code": 0, "agent": 0, "day": 0})
+            continue
+        n = len(values)
+        scores.append({
+            "code":  sum(bool(CODE_PATTERN.match(v)) for v in values) / n,
+            "agent": sum(bool(AGENT_PATTERN.match(v)) for v in values) / n,
+            # День может быть записан как "Pazartesi, Cuma" — берём первую часть
+            "day":   sum(bool(normalize_day(re.split(r"[,/;]", v)[0])) for v in values) / n,
+        })
 
-    return -1
+    def best(kind, used):
+        candidates = [(i, sc[kind]) for i, sc in enumerate(scores)
+                      if i not in used and sc[kind] > 0.6]
+        if not candidates:
+            return -1
+        return max(candidates, key=lambda x: x[1])[0]
+
+    used = set()
+    result = {}
+    # Порядок важен: сначала самые узнаваемые типы
+    for kind in ("day", "code", "agent"):
+        idx = best(kind, used)
+        result[kind] = idx
+        if idx >= 0:
+            used.add(idx)
+
+    # Название — первая незанятая колонка, где есть буквы
+    result["name"] = -1
+    for col in range(width):
+        if col in used:
+            continue
+        values = [r[col].strip() for r in rows[:300] if len(r) > col and r[col].strip()]
+        if values and any(any(c.isalpha() for c in v) for v in values):
+            result["name"] = col
+            break
+
+    return result
 
 
 def main():
@@ -116,11 +159,25 @@ def main():
         header, offset = [], 1
         print("⚠️  Заголовок не найден — первая строка считается данными")
 
-    agent_col = find_agent_column(header, rows)
-    if agent_col >= 0:
-        name = header[agent_col] if agent_col < len(header) else f"колонка {agent_col + 1}"
-        print(f"Агент берётся из «{name}»")
-    else:
+    cols = detect_columns(header, rows)
+    code_col, name_col, day_col, agent_col = cols["code"], cols["name"], cols["day"], cols["agent"]
+
+    def col_label(i):
+        if i < 0:
+            return "не найдена"
+        return header[i] if i < len(header) else f"колонка {i + 1}"
+
+    print(f"Колонки: код={col_label(code_col)}, название={col_label(name_col)}, "
+          f"день={col_label(day_col)}, агент={col_label(agent_col)}")
+
+    if code_col < 0 or day_col < 0:
+        print("\n❌ Не удалось найти колонку с кодом контрагента или днём визита.")
+        print("   Проверь файл: код должен быть вида 120.01.101.0267,")
+        print("   день — Pazartesi / Sali / Carsamba и т.д.")
+        conn.close()
+        sys.exit(1)
+
+    if agent_col < 0:
         print("\n⚠️  КОЛОНКА С АГЕНТОМ НЕ НАЙДЕНА")
         print("   Строки загрузятся с пустым агентом, и проверки «у вас уже 3 дня»")
         print("   и «в точке уже другой агент вашего бренда» для них работать НЕ будут.")
@@ -137,14 +194,9 @@ def main():
         if not any(cell.strip() for cell in row):
             continue
 
-        if len(row) < 3:
-            report.append((line_no, " | ".join(row), "меньше трёх колонок"))
-            counter["меньше трёх колонок"] += 1
-            continue
-
-        point_code = row[0].strip()
-        point_name = row[1].strip()
-        raw_days = row[2].strip()
+        point_code = row[code_col].strip() if len(row) > code_col else ""
+        point_name = row[name_col].strip() if name_col >= 0 and len(row) > name_col else ""
+        raw_days = row[day_col].strip() if len(row) > day_col else ""
 
         if not point_code:
             report.append((line_no, " | ".join(row), "пустой код контрагента"))
@@ -171,7 +223,8 @@ def main():
             continue
 
         agent = row[agent_col].strip().upper() if agent_col >= 0 and len(row) > agent_col else ""
-        brand = agent[:2] if agent else ""
+        # Бренд — буквенная часть логина: OR0104 → OR, BAH001 → BAH
+        brand = re.match(r"^[A-Z]+", agent).group(0) if agent else ""
 
         data.append((point_code, point_name, brand, agent or None, ", ".join(days)))
 
