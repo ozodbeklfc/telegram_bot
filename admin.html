@@ -313,6 +313,19 @@
 </div>
 
 <script>
+// Дни недели: короткая подпись для полоски и полное название — как в базе
+const DAYS = [
+  ["Пн", "Понедельник"], ["Вт", "Вторник"], ["Ср", "Среда"],
+  ["Чт", "Четверг"],     ["Пт", "Пятница"], ["Сб", "Суббота"],
+];
+
+function dayStrip(daysText) {
+  const list = (daysText || "").split(",").map(d => d.trim());
+  return '<div class="days">' + DAYS.map(([short, full]) =>
+    `<div class="day ${list.includes(full) ? "on" : ""}">${short}</div>`
+  ).join("") + '</div>';
+}
+
 // Учётные данные админа держим только в памяти вкладки: закрыл — вышел
 let auth = { login: "", password: "", brand: "", allBrands: false };
 
@@ -351,6 +364,18 @@ document.getElementById("password").addEventListener("keydown", e => {
   if (e.key === "Enter") doLogin();
 });
 
+// Логин запоминаем в браузере: пароль — никогда, только имя пользователя
+const LOGIN_KEY = "admin_last_login";
+
+try {
+  const saved = localStorage.getItem(LOGIN_KEY);
+  if (saved) {
+    document.getElementById("login").value = saved;
+    // Курсор сразу в поле пароля — логин уже подставлен
+    window.addEventListener("load", () => document.getElementById("password").focus());
+  }
+} catch (e) { /* приватный режим — просто не запоминаем */ }
+
 async function doLogin() {
   const btn = document.getElementById("login-btn");
   const msg = document.getElementById("login-msg");
@@ -382,6 +407,8 @@ async function doLogin() {
 
   document.getElementById("password").value = "";
   auth.allBrands = r.allBrands;
+
+  try { localStorage.setItem(LOGIN_KEY, auth.login); } catch (e) {}
 
   // Логин виден постоянно: админов несколько, и важно понимать, под кем сидишь
   document.getElementById("who-agents").textContent = auth.login.toUpperCase();
@@ -519,8 +546,10 @@ document.getElementById("logout-brands").addEventListener("click", doLogout);
 document.getElementById("logout-btn").addEventListener("click", doLogout);
 
 function doLogout() {
+  const lastLogin = auth.login;
   auth = { login: "", password: "", brand: "", allBrands: false };
-  document.getElementById("login").value = "";
+  // Логин оставляем в поле: обычно заходит один и тот же человек
+  document.getElementById("login").value = lastLogin;
   document.getElementById("password").value = "";
   document.getElementById("agent-search").value = "";
   document.getElementById("login-msg").style.display = "none";
@@ -609,6 +638,7 @@ function renderPoints(points) {
           ${p.status === 1 ? '<span class="badge passive">пассивная</span>' : ""}
         </div>
         <div class="meta">${p.pointCode}${p.inn ? " · ИНН " + p.inn : ""}</div>
+        ${dayStrip(p.days)}
       </div>
     </div>
   `).join("");
