@@ -98,8 +98,15 @@ async def login(login_value: str, password: str) -> dict:
             row = await conn.fetchrow(
                 """
                 SELECT login,
-                       COALESCE(role, 'agent')            AS role,
-                       COALESCE(brand, upper(left(login, 2))) AS brand
+                       COALESCE(role, 'agent') AS role,
+                       -- У агента бренд всегда есть: если колонка пустая,
+                       -- берём первые две буквы логина. У админа пустой
+                       -- бренд означает «общий доступ ко всем брендам»,
+                       -- поэтому подставлять туда буквы логина нельзя.
+                       CASE WHEN COALESCE(role, 'agent') = 'admin'
+                            THEN brand
+                            ELSE COALESCE(brand, upper(left(login, 2)))
+                       END AS brand
                   FROM users
                  WHERE login = $1 AND password = $2
                 """,
@@ -159,6 +166,50 @@ async def change_password(login_value: str, current_password: str, new_password:
 # АДМИН-ПАНЕЛЬ
 # ======================================================================
 
+async def list_brands() -> dict:
+    """
+    Бренды, которые есть в базе, со счётчиками.
+
+    Нужен общему админу: он входит одним логином и первым шагом выбирает,
+    чей бренд смотреть.
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH b AS (
+                    SELECT COALESCE(brand, upper(left(login, 2))) AS brand,
+                           upper(login) AS agent
+                      FROM users
+                     WHERE COALESCE(role, 'agent') = 'agent'
+                    UNION
+                    SELECT upper(left(agent, 2)), upper(agent)
+                      FROM attachments
+                     WHERE agent IS NOT NULL AND agent <> ''
+                )
+                SELECT b.brand,
+                       count(DISTINCT b.agent)        AS agents,
+                       count(DISTINCT t.point_code)   AS points
+                  FROM b
+             LEFT JOIN attachments t ON upper(t.agent) = b.agent
+                 WHERE b.brand IS NOT NULL AND b.brand <> ''
+                 GROUP BY b.brand
+                 ORDER BY agents DESC, b.brand
+                """
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    return {
+        "success": True,
+        "brands": [
+            {"brand": r["brand"], "agents": r["agents"], "points": r["points"]}
+            for r in rows
+        ],
+    }
+
+
 async def list_agents(brand: str, search: str = "") -> dict:
     """
     Агенты одного бренда со сводкой по прикреплениям.
@@ -211,7 +262,7 @@ async def list_agents(brand: str, search: str = "") -> dict:
     }
 
 
-async def agent_points(agent: str, brand: str = "") -> dict:
+async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
     """
     Точки, на которых стоит агент.
 
@@ -242,9 +293,14 @@ async def agent_points(agent: str, brand: str = "") -> dict:
              LEFT JOIN client_base c ON c.point_code = t.point_code
                  WHERE upper(t.agent) = $1
                  GROUP BY t.point_code
+                HAVING $2 = ''
+                    OR upper(COALESCE(max(c.point_name), max(t.point_name))) LIKE $2
+                    OR t.point_code LIKE $2
+                    OR max(c.inn) LIKE $2
                  ORDER BY point_name
                 """,
                 agent,
+                f"%{search.strip().upper()}%" if (search or "").strip() else "",
             )
     except Exception as e:
         return _db_error(e)
@@ -279,21 +335,56 @@ async def _check_admin(login_value: str, password: str) -> dict:
         return {"success": False, "message": "Неверный логин или пароль"}
     if auth.get("role") != "admin":
         return {"success": False, "message": "Недостаточно прав"}
-    return {"success": True, "brand": auth.get("brand"), "login": login_value}
+
+    # Пустой бренд = общий админ: видит все бренды и выбирает нужный сам.
+    # У брендового админа бренд жёстко задан в базе и подменить его нельзя.
+    return {
+        "success": True,
+        "brand": auth.get("brand") or "",
+        "allBrands": not auth.get("brand"),
+        "login": login_value,
+    }
 
 
-async def admin_list_agents(login_value: str, password: str, search: str = "") -> dict:
+async def admin_brands(login_value: str, password: str) -> dict:
+    """Первый шаг общего админа: какие бренды вообще есть."""
     auth = await _check_admin(login_value, password)
     if not auth.get("success"):
         return auth
-    return await list_agents(auth["brand"], search)
+
+    if not auth["allBrands"]:
+        # Админ закреплён за одним брендом — выбирать не из чего
+        return {"success": True, "allBrands": False, "brand": auth["brand"], "brands": []}
+
+    result = await list_brands()
+    if result.get("success"):
+        result["allBrands"] = True
+        result["brand"] = ""
+    return result
 
 
-async def admin_agent_points(login_value: str, password: str, agent: str) -> dict:
+async def admin_list_agents(login_value: str, password: str,
+                            brand: str = "", search: str = "") -> dict:
     auth = await _check_admin(login_value, password)
     if not auth.get("success"):
         return auth
-    return await agent_points(agent, auth["brand"])
+
+    # Брендовому админу бренд из запроса не подставить — берём из базы
+    target = brand if auth["allBrands"] else auth["brand"]
+    if not target:
+        return {"success": False, "message": "Не выбран бренд"}
+
+    return await list_agents(target, search)
+
+
+async def admin_agent_points(login_value: str, password: str, agent: str,
+                             search: str = "") -> dict:
+    auth = await _check_admin(login_value, password)
+    if not auth.get("success"):
+        return auth
+
+    # Общий админ смотрит любого агента, брендовый — только своего
+    return await agent_points(agent, "" if auth["allBrands"] else auth["brand"], search)
 
 
 # ======================================================================

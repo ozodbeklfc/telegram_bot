@@ -97,16 +97,21 @@ async def handle_api(request: web.Request) -> web.Response:
             if result.get("success"):
                 await notify.notify_admin(notify.build_add_text(payload))
 
+        elif action == "admin_brands":
+            result = await api.admin_brands(
+                payload.get("login", ""), payload.get("password", ""),
+            )
+
         elif action == "admin_agents":
             result = await api.admin_list_agents(
                 payload.get("login", ""), payload.get("password", ""),
-                payload.get("search", ""),
+                payload.get("brand", ""), payload.get("search", ""),
             )
 
         elif action == "admin_agent_points":
             result = await api.admin_agent_points(
                 payload.get("login", ""), payload.get("password", ""),
-                payload.get("agent", ""),
+                payload.get("agent", ""), payload.get("search", ""),
             )
 
         elif action == "check_attach":

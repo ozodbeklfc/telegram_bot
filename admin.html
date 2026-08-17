@@ -179,9 +179,25 @@
   </div>
 </div>
 
+<!-- ================= ВЫБОР БРЕНДА ================= -->
+<div id="screen-brands" class="hidden">
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <div class="top-title">Бренды</div>
+        <div class="top-sub">Выберите, чьих агентов смотреть</div>
+      </div>
+      <button class="logout" id="logout-brands">Выйти</button>
+    </div>
+    <div id="brands-list"></div>
+  </div>
+</div>
+
 <!-- ================= АГЕНТЫ ================= -->
 <div id="screen-agents" class="hidden">
   <div class="wrap">
+    <button class="back hidden" id="back-brands">← Все бренды</button>
+
     <div class="top">
       <div>
         <div class="top-title">Агенты</div>
@@ -218,10 +234,13 @@
         <div class="n" id="point-count">0</div>
         <div class="l">точек</div>
       </div>
-      <div>
-        <div class="n" id="day-count">0</div>
-        <div class="l">дней визита</div>
-      </div>
+    </div>
+
+    <div class="search">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
+      </svg>
+      <input type="text" id="point-search" placeholder="Поиск по названию, коду или ИНН" autocomplete="off">
     </div>
 
     <div id="points-list"></div>
@@ -229,14 +248,8 @@
 </div>
 
 <script>
-// Дни недели: короткие подписи для полоски и полные — для сопоставления
-const DAYS = [
-  ["Пн", "Понедельник"], ["Вт", "Вторник"], ["Ср", "Среда"],
-  ["Чт", "Четверг"],     ["Пт", "Пятница"], ["Сб", "Суббота"],
-];
-
 // Учётные данные админа держим только в памяти вкладки: закрыл — вышел
-let auth = { login: "", password: "", brand: "" };
+let auth = { login: "", password: "", brand: "", allBrands: false };
 
 async function call(action, extra) {
   const res = await fetch("/", {
@@ -250,17 +263,10 @@ async function call(action, extra) {
 }
 
 function show(id) {
-  ["screen-login", "screen-agents", "screen-points"].forEach(s => {
+  ["screen-login", "screen-brands", "screen-agents", "screen-points"].forEach(s => {
     document.getElementById(s).classList.toggle("hidden", s !== id);
   });
   window.scrollTo(0, 0);
-}
-
-function dayStrip(daysText) {
-  const list = (daysText || "").split(",").map(d => d.trim());
-  return '<div class="days">' + DAYS.map(([short, full]) =>
-    `<div class="day ${list.includes(full) ? "on" : ""}">${short}</div>`
-  ).join("") + '</div>';
 }
 
 function initials(agent) {
@@ -297,7 +303,7 @@ async function doLogin() {
   btn.textContent = "Проверяю...";
   msg.style.display = "none";
 
-  const r = await call("admin_agents", { search: "" }).catch(() => null);
+  const r = await call("admin_brands", {}).catch(() => null);
 
   btn.disabled = false;
   btn.textContent = "Войти";
@@ -309,21 +315,75 @@ async function doLogin() {
     return;
   }
 
-  auth.brand = r.brand;
-  document.getElementById("brand-chip").textContent = r.brand;
   document.getElementById("password").value = "";
-  renderAgents(r.agents);
-  show("screen-agents");
+  auth.allBrands = r.allBrands;
+
+  if (r.allBrands) {
+    // Общий логин: сначала выбираем бренд
+    renderBrands(r.brands);
+    show("screen-brands");
+  } else {
+    // Админ закреплён за брендом — сразу к агентам
+    openBrand(r.brand);
+  }
 }
 
-document.getElementById("logout-btn").addEventListener("click", () => {
-  auth = { login: "", password: "", brand: "" };
+// ---------------- ВЫБОР БРЕНДА ----------------
+function renderBrands(brands) {
+  const list = document.getElementById("brands-list");
+
+  if (!brands.length) {
+    list.innerHTML = '<div class="empty">Брендов не найдено.</div>';
+    return;
+  }
+
+  list.innerHTML = brands.map(b => `
+    <button class="card" data-brand="${b.brand}">
+      <div class="avatar">${b.brand}</div>
+      <div class="grow">
+        <div class="name">${b.brand}</div>
+        <div class="meta">${b.agents} ${plural(b.agents, "агент", "агента", "агентов")} ·
+                          ${b.points} ${plural(b.points, "точка", "точки", "точек")}</div>
+      </div>
+      <div class="chev">›</div>
+    </button>
+  `).join("");
+
+  list.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => openBrand(el.dataset.brand));
+  });
+}
+
+async function openBrand(brand) {
+  auth.brand = brand;
+  document.getElementById("brand-chip").textContent = brand;
+  document.getElementById("agent-search").value = "";
+  document.getElementById("back-brands").classList.toggle("hidden", !auth.allBrands);
+  document.getElementById("agents-list").innerHTML = '<div class="loading">Загружаю агентов...</div>';
+  show("screen-agents");
+
+  const r = await call("admin_agents", { brand: brand, search: "" }).catch(() => null);
+  if (r && r.success) {
+    renderAgents(r.agents);
+  } else {
+    document.getElementById("agents-list").innerHTML =
+      `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+  }
+}
+
+document.getElementById("back-brands").addEventListener("click", () => show("screen-brands"));
+document.getElementById("logout-brands").addEventListener("click", doLogout);
+
+document.getElementById("logout-btn").addEventListener("click", doLogout);
+
+function doLogout() {
+  auth = { login: "", password: "", brand: "", allBrands: false };
   document.getElementById("login").value = "";
   document.getElementById("password").value = "";
   document.getElementById("agent-search").value = "";
   document.getElementById("login-msg").style.display = "none";
   show("screen-login");
-});
+}
 
 // ---------------- СПИСОК АГЕНТОВ ----------------
 function renderAgents(agents) {
@@ -344,8 +404,7 @@ function renderAgents(agents) {
       <div class="avatar ${a.points ? "" : "quiet"}">${initials(a.agent)}</div>
       <div class="grow">
         <div class="name">${a.agent}</div>
-        <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")} ·
-                          ${a.days} ${plural(a.days, "день", "дня", "дней")} визита</div>
+        <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")}</div>
       </div>
       <div class="chev">›</div>
     </button>
@@ -362,20 +421,23 @@ document.getElementById("agent-search").addEventListener("input", function () {
   clearTimeout(searchTimer);
   const value = this.value;
   searchTimer = setTimeout(async () => {
-    const r = await call("admin_agents", { search: value }).catch(() => null);
+    const r = await call("admin_agents", { brand: auth.brand, search: value }).catch(() => null);
     if (r && r.success) renderAgents(r.agents);
   }, 250);
 });
 
 // ---------------- ТОЧКИ АГЕНТА ----------------
+let currentAgent = "";
+
 async function openAgent(agent) {
+  currentAgent = agent;
+  document.getElementById("point-search").value = "";
   document.getElementById("point-agent").textContent = agent;
   document.getElementById("point-count").textContent = "—";
-  document.getElementById("day-count").textContent = "—";
   document.getElementById("points-list").innerHTML = '<div class="loading">Загружаю точки...</div>';
   show("screen-points");
 
-  const r = await call("admin_agent_points", { agent: agent }).catch(() => null);
+  const r = await call("admin_agent_points", { agent: agent, search: "" }).catch(() => null);
   const list = document.getElementById("points-list");
 
   if (!r || !r.success) {
@@ -383,27 +445,44 @@ async function openAgent(agent) {
     return;
   }
 
-  const totalDays = r.points.reduce((sum, p) => sum + p.dayCount, 0);
   document.getElementById("point-count").textContent = r.points.length;
-  document.getElementById("day-count").textContent = totalDays;
+  renderPoints(r.points);
+}
 
-  if (!r.points.length) {
-    list.innerHTML = '<div class="empty">У агента пока нет прикреплённых точек.</div>';
+function renderPoints(points) {
+  const list = document.getElementById("points-list");
+
+  if (!points.length) {
+    const q = document.getElementById("point-search").value.trim();
+    list.innerHTML = q
+      ? `<div class="empty">Ничего не найдено по запросу «${q}».</div>`
+      : '<div class="empty">У агента пока нет прикреплённых точек.</div>';
     return;
   }
 
-  list.innerHTML = r.points.map(p => `
+  list.innerHTML = points.map(p => `
     <div class="card static">
       <div class="grow">
         <div class="name">${p.pointName}
           ${p.status === 1 ? '<span class="badge passive">пассивная</span>' : ""}
         </div>
         <div class="meta">${p.pointCode}${p.inn ? " · ИНН " + p.inn : ""}</div>
-        ${dayStrip(p.days)}
       </div>
     </div>
   `).join("");
 }
+
+// Поиск по точкам агента: у некоторых их сотни, листать бессмысленно
+let pointTimer = null;
+document.getElementById("point-search").addEventListener("input", function () {
+  clearTimeout(pointTimer);
+  const value = this.value;
+  pointTimer = setTimeout(async () => {
+    const r = await call("admin_agent_points",
+                         { agent: currentAgent, search: value }).catch(() => null);
+    if (r && r.success) renderPoints(r.points);
+  }, 250);
+});
 
 document.getElementById("back-btn").addEventListener("click", () => show("screen-agents"));
 </script>
