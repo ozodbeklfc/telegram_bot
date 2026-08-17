@@ -96,7 +96,13 @@ async def login(login_value: str, password: str) -> dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT login FROM users WHERE login = $1 AND password = $2",
+                """
+                SELECT login,
+                       COALESCE(role, 'agent')            AS role,
+                       COALESCE(brand, upper(left(login, 2))) AS brand
+                  FROM users
+                 WHERE login = $1 AND password = $2
+                """,
                 login_value,
                 password,
             )
@@ -106,7 +112,13 @@ async def login(login_value: str, password: str) -> dict:
     if row is None:
         return {"success": False, "message": "Неверный логин или пароль"}
 
-    return {"success": True, "message": "Успешный вход!", "user": {"login": row["login"]}}
+    return {
+        "success": True,
+        "message": "Успешный вход!",
+        "role": row["role"],
+        "brand": row["brand"],
+        "user": {"login": row["login"], "role": row["role"], "brand": row["brand"]},
+    }
 
 
 async def change_password(login_value: str, current_password: str, new_password: str) -> dict:
@@ -141,6 +153,147 @@ async def change_password(login_value: str, current_password: str, new_password:
         return {"success": False, "message": "Текущий пароль неверный"}
 
     return {"success": True, "message": "Пароль изменён"}
+
+
+# ======================================================================
+# АДМИН-ПАНЕЛЬ
+# ======================================================================
+
+async def list_agents(brand: str, search: str = "") -> dict:
+    """
+    Агенты одного бренда со сводкой по прикреплениям.
+
+    Список берётся объединением двух источников: таблицы пользователей
+    (кто может войти) и таблицы прикреплений (кто реально работает на
+    точках). Второе важно — в выгрузке встречаются агенты, которых ещё
+    не завели в users, и без них картина была бы неполной.
+    """
+    brand = (brand or "").strip().upper()[:2]
+    if not brand:
+        return {"success": False, "message": "Не указан бренд"}
+
+    pattern = f"%{(search or '').strip().upper()}%"
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH agents AS (
+                    SELECT upper(login) AS agent FROM users
+                     WHERE COALESCE(brand, upper(left(login, 2))) = $1
+                       AND COALESCE(role, 'agent') = 'agent'
+                    UNION
+                    SELECT upper(agent) AS agent FROM attachments
+                     WHERE agent IS NOT NULL AND upper(left(agent, 2)) = $1
+                )
+                SELECT a.agent,
+                       count(DISTINCT t.point_code) AS points,
+                       count(t.id)                  AS days
+                  FROM agents a
+                  LEFT JOIN attachments t ON upper(t.agent) = a.agent
+                 WHERE a.agent LIKE $2
+                 GROUP BY a.agent
+                 ORDER BY points DESC, a.agent
+                """,
+                brand, pattern,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    return {
+        "success": True,
+        "brand": brand,
+        "agents": [
+            {"agent": r["agent"], "points": r["points"], "days": r["days"]}
+            for r in rows
+        ],
+    }
+
+
+async def agent_points(agent: str, brand: str = "") -> dict:
+    """
+    Точки, на которых стоит агент.
+
+    Дни визита собираются в один список: в базе каждый день — отдельная
+    строка, а админу удобнее видеть точку одной карточкой.
+    """
+    agent = (agent or "").strip().upper()
+    if not agent:
+        return {"success": False, "message": "Не указан агент"}
+
+    # Админ видит только свой бренд — проверяем, а не полагаемся на интерфейс
+    if brand and agent[:2] != brand.strip().upper()[:2]:
+        return {"success": False, "message": "Агент относится к другому бренду"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT t.point_code,
+                       COALESCE(max(c.point_name), max(t.point_name)) AS point_name,
+                       max(c.inn)                                     AS inn,
+                       max(c.status)                                  AS status,
+                       string_agg(DISTINCT t.visit_day, ', ')          AS days,
+                       count(*)                                       AS day_count,
+                       min(t.created_at)                              AS created_at
+                  FROM attachments t
+             LEFT JOIN client_base c ON c.point_code = t.point_code
+                 WHERE upper(t.agent) = $1
+                 GROUP BY t.point_code
+                 ORDER BY point_name
+                """,
+                agent,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    return {
+        "success": True,
+        "agent": agent,
+        "points": [
+            {
+                "pointCode": r["point_code"],
+                "pointName": r["point_name"] or "—",
+                "inn": r["inn"] or "",
+                "status": r["status"] or 0,
+                "days": r["days"] or "",
+                "dayCount": r["day_count"],
+                "createdAt": r["created_at"].isoformat() if r["created_at"] else "",
+            }
+            for r in rows
+        ],
+    }
+
+
+async def _check_admin(login_value: str, password: str) -> dict:
+    """
+    Проверяет, что запрос пришёл от админа, и возвращает его бренд ИЗ БАЗЫ.
+
+    Бренд намеренно не берётся из запроса: иначе админ UL, подставив в
+    запрос "OR", увидел бы чужих агентов.
+    """
+    auth = await login(login_value, password)
+    if not auth.get("success"):
+        return {"success": False, "message": "Неверный логин или пароль"}
+    if auth.get("role") != "admin":
+        return {"success": False, "message": "Недостаточно прав"}
+    return {"success": True, "brand": auth.get("brand"), "login": login_value}
+
+
+async def admin_list_agents(login_value: str, password: str, search: str = "") -> dict:
+    auth = await _check_admin(login_value, password)
+    if not auth.get("success"):
+        return auth
+    return await list_agents(auth["brand"], search)
+
+
+async def admin_agent_points(login_value: str, password: str, agent: str) -> dict:
+    auth = await _check_admin(login_value, password)
+    if not auth.get("success"):
+        return auth
+    return await agent_points(agent, auth["brand"])
 
 
 # ======================================================================

@@ -41,6 +41,14 @@ async def handle_options(request: web.Request) -> web.Response:
     return web.Response(status=204, headers=CORS_HEADERS)
 
 
+async def handle_admin(request: web.Request) -> web.Response:
+    """Админ-панель — отдельная страница, свой вход."""
+    admin_file = STATIC_DIR / "admin.html"
+    if not admin_file.exists():
+        return web.Response(text="admin.html не найден рядом с web.py", status=404)
+    return web.FileResponse(admin_file)
+
+
 async def handle_index(request: web.Request) -> web.Response:
     """Отдаёт сам сайт, если он лежит рядом с ботом."""
     index_file = STATIC_DIR / "index.html"
@@ -89,6 +97,18 @@ async def handle_api(request: web.Request) -> web.Response:
             if result.get("success"):
                 await notify.notify_admin(notify.build_add_text(payload))
 
+        elif action == "admin_agents":
+            result = await api.admin_list_agents(
+                payload.get("login", ""), payload.get("password", ""),
+                payload.get("search", ""),
+            )
+
+        elif action == "admin_agent_points":
+            result = await api.admin_agent_points(
+                payload.get("login", ""), payload.get("password", ""),
+                payload.get("agent", ""),
+            )
+
         elif action == "check_attach":
             result = await api.check_attach_allowed(
                 payload.get("pointCode", ""), payload.get("agent", "")
@@ -123,6 +143,7 @@ async def handle_api(request: web.Request) -> web.Response:
 def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", handle_index)
+    app.router.add_get("/admin", handle_admin)
     app.router.add_post("/", handle_api)
     app.router.add_post("/api", handle_api)      # запасной путь
     app.router.add_options("/", handle_options)

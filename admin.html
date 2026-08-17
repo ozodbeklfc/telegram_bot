@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Панель бренда — Управление ТТ</title>
+<style>
+  :root {
+    --navy:   #1E2761;
+    --navy-2: #2A3A7C;
+    --mint:   #00A896;
+    --ice:    #CADCFC;
+    --bg:     #F7F9FC;
+    --line:   #E3E9F2;
+    --text:   #1A2130;
+    --muted:  #6B7688;
+    --red:    #C0392B;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+  }
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: 16px 14px 40px; }
+
+  /* ---------- шапка ---------- */
+  .top {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 18px;
+  }
+  .top-title { font-size: 20px; font-weight: 700; letter-spacing: -0.2px; }
+  .top-sub { color: var(--muted); font-size: 13px; margin-top: 1px; }
+  .brand-chip {
+    background: var(--navy); color: #fff; font-weight: 700;
+    padding: 7px 13px; border-radius: 8px; font-size: 14px; letter-spacing: 0.5px;
+  }
+
+  /* ---------- поиск ---------- */
+  .search {
+    position: relative; margin-bottom: 16px;
+  }
+  .search input {
+    width: 100%; padding: 13px 14px 13px 40px;
+    border: 1px solid var(--line); border-radius: 10px;
+    font-size: 15px; background: #fff; font-family: inherit;
+  }
+  .search input:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
+  .search svg { position: absolute; left: 13px; top: 13px; opacity: .45; }
+
+  /* ---------- карточки ---------- */
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 15px; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 14px;
+    width: 100%; text-align: left; font-family: inherit; font-size: inherit;
+    cursor: pointer; transition: border-color .12s, transform .12s;
+  }
+  .card:hover { border-color: var(--navy); }
+  .card:active { transform: scale(.995); }
+  .card:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+  .card.static { cursor: default; }
+  .card.static:hover { border-color: var(--line); }
+
+  .avatar {
+    flex: 0 0 44px; height: 44px; border-radius: 10px;
+    background: var(--navy); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; letter-spacing: .5px;
+  }
+  .avatar.quiet { background: var(--ice); color: var(--navy); }
+
+  .grow { flex: 1; min-width: 0; }
+  .name {
+    font-weight: 600; font-size: 15px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .chev { color: var(--ice); font-size: 22px; line-height: 1; }
+
+  /* ---------- полоска дней ---------- */
+  .days { display: flex; gap: 3px; margin-top: 7px; }
+  .day {
+    width: 22px; height: 20px; border-radius: 4px;
+    background: #EEF1F6; color: #A8B2C3;
+    font-size: 11px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .day.on { background: var(--mint); color: #fff; }
+
+  /* ---------- бейджи ---------- */
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 20px;
+    font-size: 11px; font-weight: 700; letter-spacing: .2px;
+  }
+  .badge.passive { background: #FBEAE8; color: var(--red); }
+
+  /* ---------- итоги ---------- */
+  .summary {
+    background: var(--navy); color: #fff; border-radius: 12px;
+    padding: 16px 18px; margin-bottom: 16px;
+    display: flex; gap: 26px; align-items: center; flex-wrap: wrap;
+  }
+  .summary .n { font-size: 26px; font-weight: 700; line-height: 1.1; }
+  .summary .l { font-size: 12px; color: var(--ice); }
+
+  /* ---------- кнопки ---------- */
+  .back {
+    background: none; border: none; color: var(--navy); font-weight: 600;
+    font-size: 14px; padding: 6px 0; margin-bottom: 10px; cursor: pointer;
+    font-family: inherit;
+  }
+  .back:hover { text-decoration: underline; }
+  .logout {
+    background: none; border: 1px solid var(--line); border-radius: 8px;
+    color: var(--muted); font-size: 13px; padding: 7px 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  .logout:hover { color: var(--red); border-color: #F0D5D2; }
+
+  /* ---------- вход ---------- */
+  .login-box {
+    max-width: 380px; margin: 12vh auto 0; background: #fff;
+    border: 1px solid var(--line); border-radius: 14px; padding: 26px 24px;
+  }
+  .login-box h1 { font-size: 21px; margin: 0 0 4px; }
+  .login-box p { color: var(--muted); font-size: 13.5px; margin: 0 0 20px; }
+  .field { margin-bottom: 13px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+  .field input {
+    width: 100%; padding: 12px 13px; border: 1px solid var(--line);
+    border-radius: 9px; font-size: 15px; font-family: inherit;
+  }
+  .field input:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
+  .btn {
+    width: 100%; padding: 13px; background: var(--navy); color: #fff;
+    border: none; border-radius: 9px; font-size: 15px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { background: var(--navy-2); }
+  .btn:disabled { opacity: .6; cursor: default; }
+
+  .msg { padding: 11px 13px; border-radius: 9px; font-size: 13.5px; margin-bottom: 13px; display: none; }
+  .msg.error { background: #FBEAE8; color: var(--red); display: block; }
+
+  .empty { text-align: center; color: var(--muted); padding: 40px 20px; font-size: 14px; }
+  .loading { text-align: center; color: var(--muted); padding: 30px; font-size: 14px; }
+
+  .hidden { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .card { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= ВХОД ================= -->
+<div id="screen-login">
+  <div class="login-box">
+    <h1>Панель бренда</h1>
+    <p>Вход для администратора. Видны только агенты вашего бренда.</p>
+    <div id="login-msg" class="msg"></div>
+    <div class="field">
+      <label for="login">Логин</label>
+      <input type="text" id="login" autocomplete="off" placeholder="admin_ul">
+    </div>
+    <div class="field">
+      <label for="password">Пароль</label>
+      <input type="password" id="password" autocomplete="current-password">
+    </div>
+    <button class="btn" id="login-btn">Войти</button>
+  </div>
+</div>
+
+<!-- ================= АГЕНТЫ ================= -->
+<div id="screen-agents" class="hidden">
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <div class="top-title">Агенты</div>
+        <div class="top-sub" id="agents-sub">—</div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span class="brand-chip" id="brand-chip">—</span>
+        <button class="logout" id="logout-btn">Выйти</button>
+      </div>
+    </div>
+
+    <div class="search">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
+      </svg>
+      <input type="text" id="agent-search" placeholder="Поиск агента" autocomplete="off">
+    </div>
+
+    <div id="agents-list"></div>
+  </div>
+</div>
+
+<!-- ================= ТОЧКИ АГЕНТА ================= -->
+<div id="screen-points" class="hidden">
+  <div class="wrap">
+    <button class="back" id="back-btn">← Все агенты</button>
+
+    <div class="summary">
+      <div>
+        <div class="n" id="point-agent">—</div>
+        <div class="l">агент</div>
+      </div>
+      <div>
+        <div class="n" id="point-count">0</div>
+        <div class="l">точек</div>
+      </div>
+      <div>
+        <div class="n" id="day-count">0</div>
+        <div class="l">дней визита</div>
+      </div>
+    </div>
+
+    <div id="points-list"></div>
+  </div>
+</div>
+
+<script>
+// Дни недели: короткие подписи для полоски и полные — для сопоставления
+const DAYS = [
+  ["Пн", "Понедельник"], ["Вт", "Вторник"], ["Ср", "Среда"],
+  ["Чт", "Четверг"],     ["Пт", "Пятница"], ["Сб", "Суббота"],
+];
+
+// Учётные данные админа держим только в памяти вкладки: закрыл — вышел
+let auth = { login: "", password: "", brand: "" };
+
+async function call(action, extra) {
+  const res = await fetch("/", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(Object.assign({
+      action: action, login: auth.login, password: auth.password
+    }, extra || {}))
+  });
+  return await res.json();
+}
+
+function show(id) {
+  ["screen-login", "screen-agents", "screen-points"].forEach(s => {
+    document.getElementById(s).classList.toggle("hidden", s !== id);
+  });
+  window.scrollTo(0, 0);
+}
+
+function dayStrip(daysText) {
+  const list = (daysText || "").split(",").map(d => d.trim());
+  return '<div class="days">' + DAYS.map(([short, full]) =>
+    `<div class="day ${list.includes(full) ? "on" : ""}">${short}</div>`
+  ).join("") + '</div>';
+}
+
+function initials(agent) {
+  return (agent || "").slice(0, 2).toUpperCase();
+}
+
+function plural(n, one, few, many) {
+  const n10 = n % 10, n100 = n % 100;
+  if (n10 === 1 && n100 !== 11) return one;
+  if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return few;
+  return many;
+}
+
+// ---------------- ВХОД ----------------
+document.getElementById("login-btn").addEventListener("click", doLogin);
+document.getElementById("password").addEventListener("keydown", e => {
+  if (e.key === "Enter") doLogin();
+});
+
+async function doLogin() {
+  const btn = document.getElementById("login-btn");
+  const msg = document.getElementById("login-msg");
+
+  auth.login = document.getElementById("login").value.trim();
+  auth.password = document.getElementById("password").value;
+
+  if (!auth.login || !auth.password) {
+    msg.className = "msg error";
+    msg.textContent = "Введите логин и пароль";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Проверяю...";
+  msg.style.display = "none";
+
+  const r = await call("admin_agents", { search: "" }).catch(() => null);
+
+  btn.disabled = false;
+  btn.textContent = "Войти";
+
+  if (!r || !r.success) {
+    msg.className = "msg error";
+    msg.textContent = r ? r.message : "Сервер не отвечает. Попробуйте ещё раз.";
+    auth.password = "";
+    return;
+  }
+
+  auth.brand = r.brand;
+  document.getElementById("brand-chip").textContent = r.brand;
+  document.getElementById("password").value = "";
+  renderAgents(r.agents);
+  show("screen-agents");
+}
+
+document.getElementById("logout-btn").addEventListener("click", () => {
+  auth = { login: "", password: "", brand: "" };
+  document.getElementById("login").value = "";
+  document.getElementById("password").value = "";
+  document.getElementById("agent-search").value = "";
+  document.getElementById("login-msg").style.display = "none";
+  show("screen-login");
+});
+
+// ---------------- СПИСОК АГЕНТОВ ----------------
+function renderAgents(agents) {
+  const list = document.getElementById("agents-list");
+  const sub = document.getElementById("agents-sub");
+
+  const working = agents.filter(a => a.points > 0).length;
+  sub.textContent = `${agents.length} ${plural(agents.length, "агент", "агента", "агентов")}` +
+                    `, ${working} с точками`;
+
+  if (!agents.length) {
+    list.innerHTML = '<div class="empty">Агентов не найдено.<br>Проверьте написание логина.</div>';
+    return;
+  }
+
+  list.innerHTML = agents.map(a => `
+    <button class="card" data-agent="${a.agent}">
+      <div class="avatar ${a.points ? "" : "quiet"}">${initials(a.agent)}</div>
+      <div class="grow">
+        <div class="name">${a.agent}</div>
+        <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")} ·
+                          ${a.days} ${plural(a.days, "день", "дня", "дней")} визита</div>
+      </div>
+      <div class="chev">›</div>
+    </button>
+  `).join("");
+
+  list.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => openAgent(el.dataset.agent));
+  });
+}
+
+// Поиск с задержкой: не дёргаем сервер на каждую букву
+let searchTimer = null;
+document.getElementById("agent-search").addEventListener("input", function () {
+  clearTimeout(searchTimer);
+  const value = this.value;
+  searchTimer = setTimeout(async () => {
+    const r = await call("admin_agents", { search: value }).catch(() => null);
+    if (r && r.success) renderAgents(r.agents);
+  }, 250);
+});
+
+// ---------------- ТОЧКИ АГЕНТА ----------------
+async function openAgent(agent) {
+  document.getElementById("point-agent").textContent = agent;
+  document.getElementById("point-count").textContent = "—";
+  document.getElementById("day-count").textContent = "—";
+  document.getElementById("points-list").innerHTML = '<div class="loading">Загружаю точки...</div>';
+  show("screen-points");
+
+  const r = await call("admin_agent_points", { agent: agent }).catch(() => null);
+  const list = document.getElementById("points-list");
+
+  if (!r || !r.success) {
+    list.innerHTML = `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+
+  const totalDays = r.points.reduce((sum, p) => sum + p.dayCount, 0);
+  document.getElementById("point-count").textContent = r.points.length;
+  document.getElementById("day-count").textContent = totalDays;
+
+  if (!r.points.length) {
+    list.innerHTML = '<div class="empty">У агента пока нет прикреплённых точек.</div>';
+    return;
+  }
+
+  list.innerHTML = r.points.map(p => `
+    <div class="card static">
+      <div class="grow">
+        <div class="name">${p.pointName}
+          ${p.status === 1 ? '<span class="badge passive">пассивная</span>' : ""}
+        </div>
+        <div class="meta">${p.pointCode}${p.inn ? " · ИНН " + p.inn : ""}</div>
+        ${dayStrip(p.days)}
+      </div>
+    </div>
+  `).join("");
+}
+
+document.getElementById("back-btn").addEventListener("click", () => show("screen-agents"));
+</script>
+</body>
+</html>
