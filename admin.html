@@ -37,9 +37,34 @@
   }
   .top-title { font-size: 20px; font-weight: 700; letter-spacing: -0.2px; }
   .top-sub { color: var(--muted); font-size: 13px; margin-top: 1px; }
+  .login-chip {
+    background: #fff; border: 1px solid var(--line); color: var(--navy);
+    font-weight: 600; padding: 6px 11px; border-radius: 8px; font-size: 13px;
+  }
+  .head-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .who-row { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
+  .brand-chip { padding: 6px 11px; font-size: 13px; }
+
+  /* окно смены пароля */
+  .overlay {
+    display: none; position: fixed; inset: 0; background: rgba(20,28,50,.55);
+    z-index: 50; padding: 16px;
+  }
+  .overlay.active { display: flex; align-items: center; justify-content: center; }
+  .modal {
+    background: #fff; border-radius: 14px; padding: 22px 20px;
+    width: 100%; max-width: 380px;
+  }
+  .modal h2 { font-size: 18px; margin: 0 0 3px; }
+  .modal .who { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .modal-actions { display: flex; gap: 9px; margin-top: 16px; }
+  .modal-actions .btn { flex: 1; }
+  .btn.ghost { background: #fff; color: var(--muted); border: 1px solid var(--line); }
+  .btn.ghost:hover { background: #F2F5FA; }
+
   .brand-chip {
     background: var(--navy); color: #fff; font-weight: 700;
-    padding: 7px 13px; border-radius: 8px; font-size: 14px; letter-spacing: 0.5px;
+    border-radius: 8px; letter-spacing: 0.5px;
   }
 
   /* ---------- поиск ---------- */
@@ -119,8 +144,8 @@
   .back:hover { text-decoration: underline; }
   .logout {
     background: none; border: 1px solid var(--line); border-radius: 8px;
-    color: var(--muted); font-size: 13px; padding: 7px 12px; cursor: pointer;
-    font-family: inherit;
+    color: var(--muted); font-size: 12.5px; padding: 7px 10px; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
   }
   .logout:hover { color: var(--red); border-color: #F0D5D2; }
 
@@ -165,11 +190,11 @@
 <div id="screen-login">
   <div class="login-box">
     <h1>Панель бренда</h1>
-    <p>Вход для администратора. Видны только агенты вашего бренда.</p>
+    <p>Вход для администратора. Общий логин показывает все бренды, брендовый — только свой.</p>
     <div id="login-msg" class="msg"></div>
     <div class="field">
       <label for="login">Логин</label>
-      <input type="text" id="login" autocomplete="off" placeholder="admin_ul">
+      <input type="text" id="login" autocomplete="off" placeholder="Логин администратора">
     </div>
     <div class="field">
       <label for="password">Пароль</label>
@@ -187,8 +212,16 @@
         <div class="top-title">Бренды</div>
         <div class="top-sub">Выберите, чьих агентов смотреть</div>
       </div>
-      <button class="logout" id="logout-brands">Выйти</button>
+      <div class="head-actions">
+        <button class="logout" id="pwd-btn-brands">Сменить пароль</button>
+        <button class="logout" id="logout-brands">Выйти</button>
+      </div>
     </div>
+
+    <div class="who-row">
+      <span class="login-chip" id="who-brands">—</span>
+    </div>
+
     <div id="brands-list"></div>
   </div>
 </div>
@@ -203,10 +236,15 @@
         <div class="top-title">Агенты</div>
         <div class="top-sub" id="agents-sub">—</div>
       </div>
-      <div style="display:flex; gap:10px; align-items:center;">
-        <span class="brand-chip" id="brand-chip">—</span>
+      <div class="head-actions">
+        <button class="logout" id="pwd-btn">Сменить пароль</button>
         <button class="logout" id="logout-btn">Выйти</button>
       </div>
+    </div>
+
+    <div class="who-row">
+      <span class="login-chip" id="who-agents">—</span>
+      <span class="brand-chip" id="brand-chip">—</span>
     </div>
 
     <div class="search">
@@ -244,6 +282,33 @@
     </div>
 
     <div id="points-list"></div>
+  </div>
+</div>
+
+<div id="pwd-overlay" class="overlay">
+  <div class="modal">
+    <h2>Смена пароля</h2>
+    <div class="who" id="pwd-who">—</div>
+
+    <div id="pwd-msg" class="msg"></div>
+
+    <div class="field">
+      <label for="pwd-current">Текущий пароль</label>
+      <input type="password" id="pwd-current" autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label for="pwd-new">Новый пароль (от 4 до 32 символов, без пробелов)</label>
+      <input type="password" id="pwd-new" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label for="pwd-repeat">Повторите новый пароль</label>
+      <input type="password" id="pwd-repeat" autocomplete="new-password">
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="pwd-cancel">Отмена</button>
+      <button class="btn" id="pwd-save">Сохранить</button>
+    </div>
   </div>
 </div>
 
@@ -318,6 +383,10 @@ async function doLogin() {
   document.getElementById("password").value = "";
   auth.allBrands = r.allBrands;
 
+  // Логин виден постоянно: админов несколько, и важно понимать, под кем сидишь
+  document.getElementById("who-agents").textContent = auth.login.toUpperCase();
+  document.getElementById("who-brands").textContent = auth.login.toUpperCase();
+
   if (r.allBrands) {
     // Общий логин: сначала выбираем бренд
     renderBrands(r.brands);
@@ -326,6 +395,79 @@ async function doLogin() {
     // Админ закреплён за брендом — сразу к агентам
     openBrand(r.brand);
   }
+}
+
+// ---------------- СМЕНА ПАРОЛЯ ----------------
+const pwdOverlay = document.getElementById("pwd-overlay");
+
+function openPassword() {
+  document.getElementById("pwd-who").textContent = auth.login.toUpperCase();
+  ["pwd-current", "pwd-new", "pwd-repeat"].forEach(id => {
+    document.getElementById(id).value = "";
+  });
+  document.getElementById("pwd-msg").style.display = "none";
+  pwdOverlay.classList.add("active");
+  document.getElementById("pwd-current").focus();
+}
+
+function closePassword() { pwdOverlay.classList.remove("active"); }
+
+document.getElementById("pwd-btn").addEventListener("click", openPassword);
+document.getElementById("pwd-btn-brands").addEventListener("click", openPassword);
+document.getElementById("pwd-cancel").addEventListener("click", closePassword);
+pwdOverlay.addEventListener("click", e => { if (e.target === pwdOverlay) closePassword(); });
+
+document.getElementById("pwd-save").addEventListener("click", savePassword);
+document.getElementById("pwd-repeat").addEventListener("keydown", e => {
+  if (e.key === "Enter") savePassword();
+});
+
+async function savePassword() {
+  const current = document.getElementById("pwd-current").value.trim();
+  const fresh   = document.getElementById("pwd-new").value.trim();
+  const repeat  = document.getElementById("pwd-repeat").value.trim();
+  const msg     = document.getElementById("pwd-msg");
+  const btn     = document.getElementById("pwd-save");
+
+  function fail(text) {
+    msg.className = "msg error";
+    msg.textContent = text;
+    msg.style.display = "block";
+  }
+
+  // Те же правила, что в боте и приложении агента
+  msg.style.display = "none";
+  if (!current || !fresh || !repeat) return fail("Заполните все три поля");
+  if (fresh === current)   return fail("Новый пароль совпадает со старым");
+  if (fresh.length < 4)    return fail("Слишком короткий пароль — минимум 4 символа");
+  if (fresh.length > 32)   return fail("Слишком длинный пароль — максимум 32 символа");
+  if (/\s/.test(fresh))    return fail("Пароль не должен содержать пробелов");
+  if (fresh !== repeat)    return fail("Пароли не совпадают");
+
+  btn.disabled = true;
+  btn.textContent = "Сохраняю...";
+
+  const r = await fetch("/", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({
+      action: "change_password",
+      login: auth.login,
+      currentPassword: current,
+      newPassword: fresh
+    })
+  }).then(res => res.json()).catch(() => null);
+
+  btn.disabled = false;
+  btn.textContent = "Сохранить";
+
+  if (!r || !r.success) {
+    return fail(r ? r.message : "Сервер не отвечает");
+  }
+
+  // Дальнейшие запросы уходят с новым паролем — иначе панель «отвалится»
+  auth.password = fresh;
+  closePassword();
 }
 
 // ---------------- ВЫБОР БРЕНДА ----------------
