@@ -1237,6 +1237,16 @@
 
             const result = await response.json();
             
+            if (result.success && result.role === 'admin') {
+                // Это вход для агентов. У админа своя панель — там он видит
+                // агентов бренда и их точки, но сам точки не прикрепляет.
+                statusDiv.className = 'status-message success';
+                statusDiv.textContent = "Открываю панель бренда...";
+                statusDiv.style.display = 'block';
+                setTimeout(() => { window.location.href = '/admin'; }, 700);
+                return;
+            }
+
             if (result.success) {
                 statusDiv.className = 'status-message success';
                 statusDiv.textContent = result.message || "Успешный вход!";
