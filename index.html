@@ -8,20 +8,34 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <style>
+        /* Единая палитра: те же цвета, что в панели бренда (admin.html) */
+        :root {
+            --navy:   #1E2761;
+            --navy-2: #2A3A7C;
+            --mint:   #00A896;
+            --mint-2: #008C7E;
+            --ice:    #CADCFC;
+            --bg:     #F7F9FC;
+            --line:   #E3E9F2;
+            --text:   #1A2130;
+            --muted:  #6B7688;
+            --red:    #C0392B;
+        }
+
         * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background-color: #f4f7f6; padding: 15px; margin: 0; color: #333; }
-        .form-container { max-width: 500px; margin: 0 auto; background: #fff; padding: 25px 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background-color: var(--bg); padding: 15px; margin: 0; color: var(--text); }
+        .form-container { max-width: 500px; margin: 0 auto; background: #fff; padding: 24px 20px; border-radius: 14px; border: 1px solid var(--line); }
         h2 { text-align: center; color: #1a1a1a; margin-top: 0; margin-bottom: 8px; font-size: 22px; font-weight: 700; }
         .subtitle { text-align: center; color: #666; margin-bottom: 20px; font-size: 14px; line-height: 1.4; }
-        .section-title { font-size: 1.05em; font-weight: bold; color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 5px; margin-top: 25px; margin-bottom: 15px; }
+        .section-title { font-size: 1.05em; font-weight: bold; color: var(--navy); border-bottom: 2px solid var(--navy); padding-bottom: 5px; margin-top: 25px; margin-bottom: 15px; }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         
         @media (max-width: 480px) { .grid-2 { grid-template-columns: 1fr; } }
 
         .form-group { margin-bottom: 15px; position: relative; }
         label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 13px; color: #444; }
-        input, select, textarea { width: 100%; padding: 11px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; outline: none; }
-        input:focus, select:focus, textarea:focus { border-color: #0056b3; }
+        input, select, textarea { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; outline: none; font-family: inherit; background: #fff; }
+        input:focus, select:focus, textarea:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
         
         /* Стили для выпадающих списков с фильтрацией (Autocomplete) */
         /* Модальное окно с картой */
@@ -49,9 +63,9 @@
         #map { width: 100%; flex: 1; min-height: 320px; }
         .map-actions { display: flex; gap: 10px; padding: 12px; }
         .map-actions button { flex: 1; padding: 12px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
-        .map-confirm { background: #28a745; color: #fff; }
-        .map-cancel { background: #e9ecef; color: #333; }
-        .map-coords { text-align: center; font-size: 13px; color: #0056b3; padding: 6px 12px 0; font-weight: 600; }
+        .map-confirm { background: var(--mint); color: #fff; }
+        .map-cancel { background: #EEF1F6; color: var(--muted); }
+        .map-coords { text-align: center; font-size: 13px; color: var(--navy); padding: 6px 12px 0; font-weight: 600; }
 
         .autocomplete-items {
             position: absolute;
@@ -76,26 +90,29 @@
         }
         .autocomplete-items div:hover {
             background-color: #eef5ff;
-            color: #0056b3;
+            color: var(--navy);
         }
 
-        .btn-submit { background-color: #28a745; color: white; border: none; padding: 13px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; width: 100%; margin-top: 10px; }
+        .btn-submit { background-color: var(--mint); color: #fff; border: none; padding: 13px; font-size: 15px; font-weight: 600; border-radius: 10px; cursor: pointer; width: 100%; margin-top: 10px; font-family: inherit; }
+        .btn-submit:hover { background-color: var(--mint-2); }
         .btn-submit:hover { background-color: #218838; }
         .btn-submit:disabled { background-color: #a5d6a7; cursor: not-allowed; }
         
-        .btn-back { background-color: transparent; color: #0056b3; border: 1px solid #0056b3; padding: 6px 12px; font-size: 13px; border-radius: 4px; cursor: pointer; margin-bottom: 15px; font-weight: 600; }
+        .btn-back { background: none; color: var(--navy); border: none; padding: 6px 0; font-size: 14px; cursor: pointer; margin-bottom: 12px; font-weight: 600; font-family: inherit; }
+        .btn-back:hover { text-decoration: underline; }
 
-        .user-bar { background: #eef5ff; border: 1px solid #cce5ff; padding: 10px 12px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; color: #004085; margin-bottom: 20px; }
-        .btn-logout { background: none; border: none; color: #dc3545; cursor: pointer; font-size: 12px; text-decoration: underline; padding: 0; }
+        .user-bar { background: #fff; border: 1px solid var(--line); padding: 10px 12px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; color: var(--navy); margin-bottom: 18px; }
+        .btn-logout { background: none; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 12.5px; padding: 6px 10px; font-family: inherit; white-space: nowrap; }
+        .btn-logout:hover { color: var(--red); border-color: #F0D5D2; }
 
         .screen { display: none; }
         .screen.active { display: block; }
 
-        .status-message { font-size: 13px; text-align: center; margin-top: 10px; margin-bottom: 10px; font-weight: 600; display: none; padding: 8px; border-radius: 4px; }
-        .status-message.error { color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
-        .status-message.success { color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
+        .status-message { font-size: 13.5px; text-align: center; margin: 10px 0; font-weight: 600; display: none; padding: 11px 13px; border-radius: 9px; }
+        .status-message.error { color: var(--red); background-color: #FBEAE8; border: none; }
+        .status-message.success { color: #0A7A6B; background-color: #E6F7F4; border: none; }
         
-        .loader { display: none; text-align: center; margin-top: 10px; font-size: 13px; color: #0056b3; font-weight: 600; }
+        .loader { display: none; text-align: center; margin-top: 10px; font-size: 13px; color: var(--navy); font-weight: 600; }
     </style>
 </head>
 <body>
@@ -129,7 +146,7 @@
         <div class="user-bar">
             <span>👤 <span id="display-user">OR0111</span></span>
             <span>
-                <button class="btn-logout" style="color:#0056b3; margin-right:12px;" onclick="openChangePassword()">Сменить пароль</button>
+                <button class="btn-logout" style="margin-right:8px;" onclick="openChangePassword()">Сменить пароль</button>
                 <button class="btn-logout" onclick="logout()">Выйти</button>
             </span>
         </div>
@@ -152,7 +169,7 @@
     <!-- ОКНО: ПАССИВНАЯ ТОЧКА -->
     <div id="passive-overlay" class="map-overlay">
         <div class="map-box" style="max-width:420px;">
-            <h3 style="color:#c0392b;">🔴 Точка пассивная</h3>
+            <h3 style="color:var(--red);">🔴 Точка пассивная</h3>
             <div style="padding:0 16px 6px; font-size:15px; line-height:1.5;">
                 <div id="passive-name" style="font-weight:600; margin-bottom:4px;"></div>
                 <div id="passive-inn" style="color:#666; font-size:14px;"></div>
@@ -167,7 +184,7 @@
     <!-- ОКНО: ПРИКРЕПЛЕНИЕ ЗАПРЕЩЕНО -->
     <div id="block-overlay" class="map-overlay">
         <div class="map-box" style="max-width:420px;">
-            <h3 id="block-title" style="color:#c0392b;">⛔️ Прикрепление невозможно</h3>
+            <h3 id="block-title" style="color:var(--red);">⛔️ Прикрепление невозможно</h3>
             <div style="padding:0 16px 6px; font-size:15px; line-height:1.5;">
                 <div id="block-name" style="font-weight:600; margin-bottom:4px;"></div>
                 <div id="block-text" style="color:#444;"></div>
@@ -259,7 +276,7 @@
         <form id="attach-form" autocomplete="off">
             <div class="form-group">
                 <label for="attachPointName">Название точки</label>
-                <input type="text" id="attachPointName" required readonly style="background-color: #e9ecef;" autocomplete="off">
+                <input type="text" id="attachPointName" required readonly style="background-color: #EEF1F6;" autocomplete="off">
                 <input type="text" id="attachPointCode" autocomplete="off">
             </div>
 
@@ -327,19 +344,19 @@
                 </div>
                 <div class="form-group">
                     <label for="inn">ИНН (9 или 14 цифр)*</label>
-                    <input type="text" id="inn" required readonly style="background-color: #e9ecef;" autocomplete="off">
+                    <input type="text" id="inn" required readonly style="background-color: #EEF1F6;" autocomplete="off">
                 </div>
                 <div class="form-group">
                     <label for="geo">Геометка*</label>
                     <input type="text" id="geo" required readonly placeholder="Нажмите кнопку ниже"
-                           style="background-color: #e9ecef;" autocomplete="off">
+                           style="background-color: #EEF1F6;" autocomplete="off">
                 </div>
             </div>
             <div style="display:flex; gap:10px; margin-bottom:10px;">
                 <button type="button" id="geo-btn" class="btn-submit"
-                        style="background:#0056b3; margin:0; flex:1;">📍 Я на точке</button>
+                        style="background:var(--navy); margin:0; flex:1;">📍 Я на точке</button>
                 <button type="button" id="map-btn" class="btn-submit"
-                        style="background:#6c3fb5; margin:0; flex:1;">🗺 Выбрать на карте</button>
+                        style="background:var(--navy-2); margin:0; flex:1;">🗺 Выбрать на карте</button>
             </div>
             <div id="geo-status" class="status-message"></div>
 
@@ -387,7 +404,7 @@
             <div class="grid-2">
                 <div class="form-group">
                     <label for="agentLogin">Логин агента*</label>
-                    <input type="text" id="agentLogin" readonly style="background-color: #e9ecef;" autocomplete="off">
+                    <input type="text" id="agentLogin" readonly style="background-color: #EEF1F6;" autocomplete="off">
                 </div>
                 <div class="form-group">
                     <label for="visitDay1">День визита 1*</label>
@@ -1216,8 +1233,27 @@
     }
 
     // 1. АВТОРИЗАЦИЯ
+    // Общая «дверь» в панель бренда. Здесь это не вход в систему: логин и
+    // пароль своего админа человек вводит уже внутри панели. Так админам не
+    // нужно помнить два разных адреса.
+    const PANEL_LOGIN = "admin";
+    const PANEL_PASSWORD = "firstg2026";
+
     document.getElementById('auth-form').addEventListener('submit', async function(e) {
         e.preventDefault();
+
+        const enteredLogin = document.getElementById('loginAgent').value.trim().toLowerCase();
+        const enteredPassword = document.getElementById('loginPassword').value;
+
+        if (enteredLogin === PANEL_LOGIN && enteredPassword === PANEL_PASSWORD) {
+            const status = document.getElementById('auth-status');
+            status.className = 'status-message success';
+            status.textContent = "Открываю панель бренда...";
+            status.style.display = 'block';
+            setTimeout(() => { window.location.href = '/admin'; }, 600);
+            return;
+        }
+
         const login = document.getElementById('loginAgent').value.trim();
         const password = document.getElementById('loginPassword').value.trim();
         const statusDiv = document.getElementById('auth-status');
@@ -1237,15 +1273,6 @@
 
             const result = await response.json();
             
-            if (result.success && result.role === 'admin') {
-                // Это вход для агентов. У админа своя панель — там он видит
-                // агентов бренда и их точки, но сам точки не прикрепляет.
-                statusDiv.className = 'status-message success';
-                statusDiv.textContent = "Открываю панель бренда...";
-                statusDiv.style.display = 'block';
-                setTimeout(() => { window.location.href = '/admin'; }, 700);
-                return;
-            }
 
             if (result.success) {
                 statusDiv.className = 'status-message success';
@@ -1714,7 +1741,7 @@
 
         points.forEach(p => {
             const box = document.createElement('div');
-            box.style.cssText = 'border:1px solid #dee2e6; border-radius:8px; padding:10px; margin-bottom:8px;';
+            box.style.cssText = 'border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:8px;';
 
             const title = document.createElement('div');
             title.style.cssText = 'font-weight:600; margin-bottom:2px;';
@@ -1867,7 +1894,7 @@
 
         matches.forEach(m => {
             const box = document.createElement('div');
-            box.style.cssText = 'border:1px solid #dee2e6; border-radius:8px; padding:10px; margin-bottom:8px;';
+            box.style.cssText = 'border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:8px;';
 
             const title = document.createElement('div');
             title.style.cssText = 'font-weight:600; margin-bottom:2px;';

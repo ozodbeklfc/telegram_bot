@@ -43,6 +43,19 @@
   }
   .head-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
   .who-row { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
+
+  /* Шапка и поиск остаются на экране при прокрутке: у некоторых агентов
+     сотни точек, и без этого поиск уезжает наверх безвозвратно */
+  .sticky {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--bg);
+    padding-top: 14px;
+    margin: -16px -14px 0;
+    padding-left: 14px; padding-right: 14px;
+    border-bottom: 1px solid transparent;
+  }
+  .sticky.scrolled { border-bottom-color: var(--line); }
+  .sticky .search { margin-bottom: 14px; }
   .brand-chip { padding: 6px 11px; font-size: 13px; }
 
   /* окно смены пароля */
@@ -129,10 +142,10 @@
   /* ---------- итоги ---------- */
   .summary {
     background: var(--navy); color: #fff; border-radius: 12px;
-    padding: 16px 18px; margin-bottom: 16px;
-    display: flex; gap: 26px; align-items: center; flex-wrap: wrap;
+    padding: 13px 16px; margin-bottom: 12px;
+    display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
   }
-  .summary .n { font-size: 26px; font-weight: 700; line-height: 1.1; }
+  .summary .n { font-size: 22px; font-weight: 700; line-height: 1.1; }
   .summary .l { font-size: 12px; color: var(--ice); }
 
   /* ---------- кнопки ---------- */
@@ -229,29 +242,31 @@
 <!-- ================= АГЕНТЫ ================= -->
 <div id="screen-agents" class="hidden">
   <div class="wrap">
-    <button class="back hidden" id="back-brands">← Все бренды</button>
+    <div class="sticky" id="agents-sticky">
+      <button class="back hidden" id="back-brands">← Все бренды</button>
 
-    <div class="top">
-      <div>
-        <div class="top-title">Агенты</div>
-        <div class="top-sub" id="agents-sub">—</div>
+      <div class="top">
+        <div>
+          <div class="top-title">Агенты</div>
+          <div class="top-sub" id="agents-sub">—</div>
+        </div>
+        <div class="head-actions">
+          <button class="logout" id="pwd-btn">Сменить пароль</button>
+          <button class="logout" id="logout-btn">Выйти</button>
+        </div>
       </div>
-      <div class="head-actions">
-        <button class="logout" id="pwd-btn">Сменить пароль</button>
-        <button class="logout" id="logout-btn">Выйти</button>
+
+      <div class="who-row">
+        <span class="login-chip" id="who-agents">—</span>
+        <span class="brand-chip" id="brand-chip">—</span>
       </div>
-    </div>
 
-    <div class="who-row">
-      <span class="login-chip" id="who-agents">—</span>
-      <span class="brand-chip" id="brand-chip">—</span>
-    </div>
-
-    <div class="search">
+      <div class="search">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
       </svg>
       <input type="text" id="agent-search" placeholder="Поиск агента" autocomplete="off">
+      </div>
     </div>
 
     <div id="agents-list"></div>
@@ -261,9 +276,10 @@
 <!-- ================= ТОЧКИ АГЕНТА ================= -->
 <div id="screen-points" class="hidden">
   <div class="wrap">
-    <button class="back" id="back-btn">← Все агенты</button>
+    <div class="sticky" id="points-sticky">
+      <button class="back" id="back-btn">← Все агенты</button>
 
-    <div class="summary">
+      <div class="summary">
       <div>
         <div class="n" id="point-agent">—</div>
         <div class="l">агент</div>
@@ -272,13 +288,14 @@
         <div class="n" id="point-count">0</div>
         <div class="l">точек</div>
       </div>
-    </div>
+      </div>
 
-    <div class="search">
+      <div class="search">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
       </svg>
       <input type="text" id="point-search" placeholder="Поиск по названию, коду или ИНН" autocomplete="off">
+      </div>
     </div>
 
     <div id="points-list"></div>
@@ -657,6 +674,15 @@ document.getElementById("point-search").addEventListener("input", function () {
 });
 
 document.getElementById("back-btn").addEventListener("click", () => show("screen-agents"));
+
+// Линия под закреплённой шапкой появляется, только когда под ней что-то
+// уехало: на нетронутой странице она выглядела бы лишней
+window.addEventListener("scroll", () => {
+  const scrolled = window.scrollY > 4;
+  document.querySelectorAll(".sticky").forEach(el => {
+    el.classList.toggle("scrolled", scrolled);
+  });
+}, { passive: true });
 </script>
 </body>
 </html>
