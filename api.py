@@ -271,9 +271,11 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                      GROUP BY 1, 2
                     HAVING count(*) > 3
                 ),
-                -- на точке несколько агентов одного бренда (сетевые не в счёт)
+                -- на точке несколько агентов ТОГО ЖЕ бренда, что и наш агент
+                -- (чужие бренды к его проблемам отношения не имеют,
+                --  сетевые точки не считаются)
                 same_brand AS (
-                    SELECT a.point_code
+                    SELECT a.point_code, upper(left(a.agent, 2)) AS brand
                       FROM attachments a
                  LEFT JOIN client_base c ON c.point_code = a.point_code
                      WHERE COALESCE(c.type, 'def') <> 'chain'
@@ -284,8 +286,10 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                 SELECT m.agent,
                        count(DISTINCT t.point_code) AS points,
                        count(DISTINCT t.point_code) FILTER (
-                           WHERE t.point_code IN (SELECT point_code FROM same_brand)
-                              OR (m.agent, t.point_code) IN (SELECT agent, point_code FROM too_many)
+                           WHERE (t.point_code, left(m.agent, 2)) IN
+                                 (SELECT point_code, brand FROM same_brand)
+                              OR (m.agent, t.point_code) IN
+                                 (SELECT agent, point_code FROM too_many)
                        ) AS problems
                   FROM my_agents m
              LEFT JOIN attachments t ON upper(t.agent) = m.agent
@@ -450,12 +454,18 @@ async def point_details(point_code: str, agent: str = "") -> dict:
         for r in rows
     ]
 
-    # Конфликт по бренду считаем только внутри бренда открытого агента
+    # Всё считаем в рамках бренда открытого агента: агенты других брендов
+    # на этой же точке — не его проблема и не должны попадать в окно разбора
     brand = agent_brand(agent) if agent else ""
     same_brand = [a for a in agents if agent_brand(a["agent"]) == brand] if brand else agents
 
+    # Лишние дни — персональная проблема конкретного агента
+    over_days = [a for a in (
+        [x for x in agents if x["agent"] == agent] if agent else agents
+    ) if a["tooManyDays"]]
+
     problems = []
-    if any(a["tooManyDays"] for a in agents):
+    if over_days:
         problems.append("days")
     if point_type != "chain" and len(same_brand) > 1:
         problems.append("brand")
@@ -469,6 +479,7 @@ async def point_details(point_code: str, agent: str = "") -> dict:
         "status": (info["status"] if info else 0),
         "agents": agents,
         "sameBrandAgents": same_brand,
+        "overDaysAgents": over_days,
         "problems": problems,
         "maxDays": MAX_VISIT_DAYS,
     }

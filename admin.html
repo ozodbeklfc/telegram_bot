@@ -796,7 +796,8 @@ async function openFix(pointCode) {
 
   if (hasDays) {
     // Проблема 1: у агента больше трёх дней — предлагаем снять лишние
-    const over = r.agents.filter(a => a.tooManyDays);
+    // Только открытый агент: чужие дни правит его собственный супервайзер
+    const over = r.overDaysAgents || [];
     over.forEach(a => {
       html += `<p style="margin:0 0 8px; font-size:13.5px; color:#5A6478;">
                  У <b>${a.agent}</b> ${a.dayCount} ${plural(a.dayCount, "день", "дня", "дней")}
