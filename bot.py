@@ -315,14 +315,14 @@ async def process_password(message: Message, state: FSMContext):
     checking_msg = await message.answer("⏳ Проверяю логин и пароль...")
     result = await api.login(login_value, password)
 
-    if result.get("success") and result.get("role") == "admin":
+    if result.get("success") and result.get("role") in ("admin", "supervisor"):
         # Админ работает через панель бренда, а не через бота: прикреплять
         # точки он не должен
         await state.set_state(AuthStates.waiting_login)
         await checking_msg.edit_text(
             "🔒 Это вход для агентов.\n\n"
-            "Панель бренда открывается в браузере — там видно ваших агентов "
-            "и их точки.\n\n"
+            "Панель супервайзера открывается в браузере — там видно ваших "
+            "агентов, их точки и проблемы.\n\n"
             "Введите логин агента:"
         )
         await delete_message_safe(message)

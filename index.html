@@ -990,10 +990,10 @@
             "QASHQADARYO VILOYATI": ["QAR-D3", "QAR-D1", "QAR-D2", "QAR-D4", "SHAH-D2", "SHAH-D1"],
             "XORAZM VILOYATI": ["XOR-D4", "XOR-D2", "XOR-D5", "XOR-D3", "XOR-D1", "XOR-D6"],
             "QORAQALPOQISTON": ["NUK-D3", "NUK-D2", "NUK-D1"],
-            "FARGONA VILOYATI": ["FAR-D1", "FAR-D2", "FAR-D3", "FAR-D4", "FAR-D5",],
+            "FARGONA VILOYATI": ["FAR-D1", "FAR-D2", "FAR-D3", "FAR-D4", "FAR-D5","QOQ-D1", "QOQ-D2", "QOQ-D3", "QOQ-D4", "QOQ-D5"],
             "ANDIJON VILOYATI": ["AND-D1", "AND-D2", "AND-D3", "AND-D4", "AND-D5"],
             "NAMANGAN VILOYATI": ["NAM-D1", "NAM-D2", "NAM-D3", "NAM-D4", "NAM-D5"],
-            "KOKAND VILOYATI" : ["QOQ-D1", "QOQ-D2", "QOQ-D3", "QOQ-D4", "QOQ-D5"]
+            "DEFAULT": ["DLV-101", "DLV-102", "DLV-103"]
         }
     };
 
@@ -1273,6 +1273,17 @@
 
             const result = await response.json();
             
+
+            // Супервайзеры и админы работают в своей панели и точки не
+            // прикрепляют. Проверяем роль ПОСЛЕ ответа сервера: она хранится
+            // в базе, а по виду логина её не угадать.
+            if (result.success && (result.role === 'admin' || result.role === 'supervisor')) {
+                statusDiv.className = 'status-message success';
+                statusDiv.textContent = "Это вход для агентов. Открываю панель супервайзера...";
+                statusDiv.style.display = 'block';
+                setTimeout(() => { window.location.href = '/admin'; }, 900);
+                return;
+            }
 
             if (result.success) {
                 statusDiv.className = 'status-message success';
