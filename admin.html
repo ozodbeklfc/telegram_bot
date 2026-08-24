@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Панель супервайзера — Управление ТТ</title>
+<style>
+  :root {
+    --navy:   #1E2761;
+    --navy-2: #2A3A7C;
+    --mint:   #00A896;
+    --ice:    #CADCFC;
+    --bg:     #F7F9FC;
+    --line:   #E3E9F2;
+    --text:   #1A2130;
+    --muted:  #6B7688;
+    --red:    #C0392B;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+  }
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: 16px 14px 40px; }
+
+  /* ---------- шапка ---------- */
+  .top {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 18px;
+  }
+  .top-title { font-size: 20px; font-weight: 700; letter-spacing: -0.2px; }
+  .top-sub { color: var(--muted); font-size: 13px; margin-top: 1px; }
+  .login-chip {
+    background: #fff; border: 1px solid var(--line); color: var(--navy);
+    font-weight: 600; padding: 6px 11px; border-radius: 8px; font-size: 13px;
+  }
+  .head-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .who-row { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; }
+
+  /* Шапка и поиск остаются на экране при прокрутке: у некоторых агентов
+     сотни точек, и без этого поиск уезжает наверх безвозвратно */
+  .sticky {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--bg);
+    padding-top: 14px;
+    margin: -16px -14px 0;
+    padding-left: 14px; padding-right: 14px;
+    border-bottom: 1px solid transparent;
+  }
+  .sticky.scrolled { border-bottom-color: var(--line); }
+  .sticky .search { margin-bottom: 14px; }
+  .brand-chip { padding: 6px 11px; font-size: 13px; }
+
+  /* окно смены пароля */
+  .overlay {
+    display: none; position: fixed; inset: 0; background: rgba(20,28,50,.55);
+    z-index: 50; padding: 16px;
+  }
+  .overlay.active { display: flex; align-items: center; justify-content: center; }
+  .modal {
+    background: #fff; border-radius: 14px; padding: 22px 20px;
+    width: 100%; max-width: 380px;
+  }
+  .modal h2 { font-size: 18px; margin: 0 0 3px; }
+  .modal .who { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .modal-actions { display: flex; gap: 9px; margin-top: 16px; }
+  .modal-actions .btn { flex: 1; }
+  .btn.ghost { background: #fff; color: var(--muted); border: 1px solid var(--line); }
+  .btn.ghost:hover { background: #F2F5FA; }
+
+  .brand-chip {
+    background: var(--navy); color: #fff; font-weight: 700;
+    border-radius: 8px; letter-spacing: 0.5px;
+  }
+
+  /* ---------- поиск ---------- */
+  .search {
+    position: relative; margin-bottom: 16px;
+  }
+  .search input {
+    width: 100%; padding: 13px 14px 13px 40px;
+    border: 1px solid var(--line); border-radius: 10px;
+    font-size: 15px; background: #fff; font-family: inherit;
+  }
+  .search input:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
+  .search svg { position: absolute; left: 13px; top: 13px; opacity: .45; }
+
+  /* ---------- карточки ---------- */
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 15px; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 14px;
+    width: 100%; text-align: left; font-family: inherit; font-size: inherit;
+    cursor: pointer; transition: border-color .12s, transform .12s;
+  }
+  .card:hover { border-color: var(--navy); }
+  .card:active { transform: scale(.995); }
+  .card:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
+  .card.static { cursor: default; }
+  .card.static:hover { border-color: var(--line); }
+
+  .avatar {
+    flex: 0 0 44px; height: 44px; border-radius: 10px;
+    background: var(--navy); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; letter-spacing: .5px;
+  }
+  .avatar.quiet { background: var(--ice); color: var(--navy); }
+
+  .grow { flex: 1; min-width: 0; }
+  .name {
+    font-weight: 600; font-size: 15px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .chev { color: var(--ice); font-size: 22px; line-height: 1; }
+
+  /* ---------- полоска дней ---------- */
+  .days { display: flex; gap: 3px; margin-top: 7px; }
+  .day {
+    width: 22px; height: 20px; border-radius: 4px;
+    background: #EEF1F6; color: #A8B2C3;
+    font-size: 11px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .day.on { background: var(--mint); color: #fff; }
+
+  /* ---------- бейджи ---------- */
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 20px;
+    font-size: 11px; font-weight: 700; letter-spacing: .2px;
+  }
+  .badge.passive { background: #FBEAE8; color: var(--red); }
+  .badge.problem { background: #FBEAE8; color: var(--red); }
+  .badge.chain   { background: #E6F7F4; color: #0A7A6B; }
+
+  /* Проблемная точка: слегка красная подложка и красная рамка */
+  .card.problem {
+    background: #FDF3F2;
+    border-color: #EFC9C4;
+    cursor: pointer;
+  }
+  .card.problem:hover { border-color: var(--red); }
+
+  .problem-title { color: var(--red); font-weight: 700; font-size: 13px; margin-bottom: 3px; }
+
+  .agent-row {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px;
+  }
+  .agent-row.me { border-color: var(--navy); background: #F7F9FF; }
+  .agent-row .grow { min-width: 0; }
+  .btn-danger {
+    background: #fff; color: var(--red); border: 1px solid #EFC9C4;
+    border-radius: 8px; padding: 8px 11px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; font-family: inherit; white-space: nowrap;
+  }
+  .btn-danger:hover { background: #FBEAE8; }
+
+  .day-pick {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 10px; margin: 0 6px 6px 0; cursor: pointer;
+    font-size: 13px; background: #fff;
+  }
+  .day-pick input { margin: 0; }
+  .day-pick.keep { border-color: #C8EFE8; background: #F2FBF9; }
+
+  /* ---------- итоги ---------- */
+  .summary {
+    background: var(--navy); color: #fff; border-radius: 12px;
+    padding: 13px 16px; margin-bottom: 12px;
+    display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+  }
+  .summary .n { font-size: 22px; font-weight: 700; line-height: 1.1; }
+  .summary .l { font-size: 12px; color: var(--ice); }
+
+  /* ---------- кнопки ---------- */
+  .back {
+    background: none; border: none; color: var(--navy); font-weight: 600;
+    font-size: 14px; padding: 6px 0; margin-bottom: 10px; cursor: pointer;
+    font-family: inherit;
+  }
+  .back:hover { text-decoration: underline; }
+  .logout {
+    background: none; border: 1px solid var(--line); border-radius: 8px;
+    color: var(--muted); font-size: 12.5px; padding: 7px 10px; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
+  }
+  .logout:hover { color: var(--red); border-color: #F0D5D2; }
+
+  /* ---------- вход ---------- */
+  .login-box {
+    max-width: 380px; margin: 12vh auto 0; background: #fff;
+    border: 1px solid var(--line); border-radius: 14px; padding: 26px 24px;
+  }
+  .login-box h1 { font-size: 21px; margin: 0 0 4px; }
+  .login-box p { color: var(--muted); font-size: 13.5px; margin: 0 0 20px; }
+  .field { margin-bottom: 13px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+  .field input {
+    width: 100%; padding: 12px 13px; border: 1px solid var(--line);
+    border-radius: 9px; font-size: 15px; font-family: inherit;
+  }
+  .field input:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
+  .btn {
+    width: 100%; padding: 13px; background: var(--navy); color: #fff;
+    border: none; border-radius: 9px; font-size: 15px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { background: var(--navy-2); }
+  .btn:disabled { opacity: .6; cursor: default; }
+
+  .msg { padding: 11px 13px; border-radius: 9px; font-size: 13.5px; margin-bottom: 13px; display: none; }
+  .msg.error { background: #FBEAE8; color: var(--red); display: block; }
+
+  .empty { text-align: center; color: var(--muted); padding: 40px 20px; font-size: 14px; }
+  .loading { text-align: center; color: var(--muted); padding: 30px; font-size: 14px; }
+
+  .hidden { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .card { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= ВХОД ================= -->
+<div id="screen-login">
+  <div class="login-box">
+    <h1>Панель супервайзера</h1>
+    <p>Супервайзер видит своих агентов. Общий логин — всех супервайзеров.</p>
+    <div id="login-msg" class="msg"></div>
+    <div class="field">
+      <label for="login">Логин</label>
+      <input type="text" id="login" autocomplete="off" placeholder="Например: ULS0101">
+    </div>
+    <div class="field">
+      <label for="password">Пароль</label>
+      <input type="password" id="password" autocomplete="current-password">
+    </div>
+    <button class="btn" id="login-btn">Войти</button>
+  </div>
+</div>
+
+<!-- ================= ВЫБОР БРЕНДА ================= -->
+<div id="screen-brands" class="hidden">
+  <div class="wrap">
+    <div class="sticky" id="sv-sticky">
+    <div class="top">
+      <div>
+        <div class="top-title">Супервайзеры</div>
+        <div class="top-sub" id="sv-sub">Выберите, чьих агентов смотреть</div>
+      </div>
+      <div class="head-actions">
+        <button class="logout" id="pwd-btn-brands">Сменить пароль</button>
+        <button class="logout" id="logout-brands">Выйти</button>
+      </div>
+    </div>
+
+    <div class="who-row">
+      <span class="login-chip" id="who-brands">—</span>
+    </div>
+
+    <div class="search">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
+      </svg>
+      <input type="text" id="sv-search" placeholder="Поиск супервайзера" autocomplete="off">
+    </div>
+    </div>
+
+    <div id="brands-list"></div>
+  </div>
+</div>
+
+<!-- ================= АГЕНТЫ ================= -->
+<div id="screen-agents" class="hidden">
+  <div class="wrap">
+    <div class="sticky" id="agents-sticky">
+      <button class="back hidden" id="back-brands">← Все супервайзеры</button>
+
+      <div class="top">
+        <div>
+          <div class="top-title">Агенты</div>
+          <div class="top-sub" id="agents-sub">—</div>
+        </div>
+        <div class="head-actions">
+          <button class="logout" id="pwd-btn">Сменить пароль</button>
+          <button class="logout" id="logout-btn">Выйти</button>
+        </div>
+      </div>
+
+      <div class="who-row">
+        <span class="login-chip" id="who-agents">—</span>
+        <span class="brand-chip" id="brand-chip">—</span>
+      </div>
+
+      <div class="search">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
+      </svg>
+      <input type="text" id="agent-search" placeholder="Поиск агента" autocomplete="off">
+      </div>
+    </div>
+
+    <div id="agents-list"></div>
+  </div>
+</div>
+
+<!-- ================= ТОЧКИ АГЕНТА ================= -->
+<div id="screen-points" class="hidden">
+  <div class="wrap">
+    <div class="sticky" id="points-sticky">
+      <button class="back" id="back-btn">← Все агенты</button>
+
+      <div class="summary">
+      <div>
+        <div class="n" id="point-agent">—</div>
+        <div class="l">агент</div>
+      </div>
+      <div>
+        <div class="n" id="point-count">0</div>
+        <div class="l">точек</div>
+      </div>
+      </div>
+
+      <div class="search">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
+      </svg>
+      <input type="text" id="point-search" placeholder="Поиск по названию, коду или ИНН" autocomplete="off">
+      </div>
+    </div>
+
+    <div id="points-list"></div>
+  </div>
+</div>
+
+<div id="fix-overlay" class="overlay">
+  <div class="modal" style="max-width:460px; max-height:88vh; overflow-y:auto;">
+    <h2 id="fix-title">Разбор точки</h2>
+    <div class="who" id="fix-point">—</div>
+
+    <div id="fix-msg" class="msg"></div>
+    <div id="fix-body"></div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="fix-close">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div id="pwd-overlay" class="overlay">
+  <div class="modal">
+    <h2>Смена пароля</h2>
+    <div class="who" id="pwd-who">—</div>
+
+    <div id="pwd-msg" class="msg"></div>
+
+    <div class="field">
+      <label for="pwd-current">Текущий пароль</label>
+      <input type="password" id="pwd-current" autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label for="pwd-new">Новый пароль (от 4 до 32 символов, без пробелов)</label>
+      <input type="password" id="pwd-new" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label for="pwd-repeat">Повторите новый пароль</label>
+      <input type="password" id="pwd-repeat" autocomplete="new-password">
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="pwd-cancel">Отмена</button>
+      <button class="btn" id="pwd-save">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Дни недели: короткая подпись для полоски и полное название — как в базе
+const DAYS = [
+  ["Пн", "Понедельник"], ["Вт", "Вторник"], ["Ср", "Среда"],
+  ["Чт", "Четверг"],     ["Пт", "Пятница"], ["Сб", "Суббота"],
+];
+
+function dayStrip(daysText) {
+  const list = (daysText || "").split(",").map(d => d.trim());
+  return '<div class="days">' + DAYS.map(([short, full]) =>
+    `<div class="day ${list.includes(full) ? "on" : ""}">${short}</div>`
+  ).join("") + '</div>';
+}
+
+// Учётные данные админа держим только в памяти вкладки: закрыл — вышел
+let auth = { login: "", password: "", brand: "", supervisor: "", isAdmin: false };
+
+async function call(action, extra) {
+  const res = await fetch("/", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(Object.assign({
+      action: action, login: auth.login, password: auth.password
+    }, extra || {}))
+  });
+  return await res.json();
+}
+
+function show(id) {
+  ["screen-login", "screen-brands", "screen-agents", "screen-points"].forEach(s => {
+    document.getElementById(s).classList.toggle("hidden", s !== id);
+  });
+  window.scrollTo(0, 0);
+}
+
+function initials(agent) {
+  return (agent || "").slice(0, 2).toUpperCase();
+}
+
+function plural(n, one, few, many) {
+  const n10 = n % 10, n100 = n % 100;
+  if (n10 === 1 && n100 !== 11) return one;
+  if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return few;
+  return many;
+}
+
+// ---------------- ВХОД ----------------
+document.getElementById("login-btn").addEventListener("click", doLogin);
+document.getElementById("password").addEventListener("keydown", e => {
+  if (e.key === "Enter") doLogin();
+});
+
+// Логин запоминаем в браузере: пароль — никогда, только имя пользователя
+const LOGIN_KEY = "admin_last_login";
+
+try {
+  const saved = localStorage.getItem(LOGIN_KEY);
+  if (saved) {
+    document.getElementById("login").value = saved;
+    // Курсор сразу в поле пароля — логин уже подставлен
+    window.addEventListener("load", () => document.getElementById("password").focus());
+  }
+} catch (e) { /* приватный режим — просто не запоминаем */ }
+
+async function doLogin() {
+  const btn = document.getElementById("login-btn");
+  const msg = document.getElementById("login-msg");
+
+  auth.login = document.getElementById("login").value.trim();
+  auth.password = document.getElementById("password").value;
+
+  if (!auth.login || !auth.password) {
+    msg.className = "msg error";
+    msg.textContent = "Введите логин и пароль";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Проверяю...";
+  msg.style.display = "none";
+
+  const r = await call("panel_start", {}).catch(() => null);
+
+  btn.disabled = false;
+  btn.textContent = "Войти";
+
+  if (!r || !r.success) {
+    msg.className = "msg error";
+    msg.textContent = r ? r.message : "Сервер не отвечает. Попробуйте ещё раз.";
+    auth.password = "";
+    return;
+  }
+
+  document.getElementById("password").value = "";
+  auth.isAdmin = !!r.isAdmin;
+
+  try { localStorage.setItem(LOGIN_KEY, auth.login); } catch (e) {}
+
+  // Логин виден постоянно: админов несколько, и важно понимать, под кем сидишь
+  document.getElementById("who-agents").textContent = auth.login.toUpperCase();
+  document.getElementById("who-brands").textContent = auth.login.toUpperCase();
+
+  if (r.isAdmin) {
+    // Общий логин: сначала выбираем супервайзера
+    renderSupervisors(r.supervisors || []);
+    show("screen-brands");
+  } else {
+    // Вошёл супервайзер — сразу его агенты
+    auth.supervisor = auth.login.toUpperCase();
+    document.getElementById("brand-chip").textContent = r.brand || "";
+    document.getElementById("back-brands").classList.add("hidden");
+    renderAgents(r.agents || []);
+    show("screen-agents");
+  }
+}
+
+// ---------------- СМЕНА ПАРОЛЯ ----------------
+const pwdOverlay = document.getElementById("pwd-overlay");
+
+function openPassword() {
+  document.getElementById("pwd-who").textContent = auth.login.toUpperCase();
+  ["pwd-current", "pwd-new", "pwd-repeat"].forEach(id => {
+    document.getElementById(id).value = "";
+  });
+  document.getElementById("pwd-msg").style.display = "none";
+  pwdOverlay.classList.add("active");
+  document.getElementById("pwd-current").focus();
+}
+
+function closePassword() { pwdOverlay.classList.remove("active"); }
+
+document.getElementById("pwd-btn").addEventListener("click", openPassword);
+document.getElementById("pwd-btn-brands").addEventListener("click", openPassword);
+document.getElementById("pwd-cancel").addEventListener("click", closePassword);
+pwdOverlay.addEventListener("click", e => { if (e.target === pwdOverlay) closePassword(); });
+
+document.getElementById("pwd-save").addEventListener("click", savePassword);
+document.getElementById("pwd-repeat").addEventListener("keydown", e => {
+  if (e.key === "Enter") savePassword();
+});
+
+async function savePassword() {
+  const current = document.getElementById("pwd-current").value.trim();
+  const fresh   = document.getElementById("pwd-new").value.trim();
+  const repeat  = document.getElementById("pwd-repeat").value.trim();
+  const msg     = document.getElementById("pwd-msg");
+  const btn     = document.getElementById("pwd-save");
+
+  function fail(text) {
+    msg.className = "msg error";
+    msg.textContent = text;
+    msg.style.display = "block";
+  }
+
+  // Те же правила, что в боте и приложении агента
+  msg.style.display = "none";
+  if (!current || !fresh || !repeat) return fail("Заполните все три поля");
+  if (fresh === current)   return fail("Новый пароль совпадает со старым");
+  if (fresh.length < 4)    return fail("Слишком короткий пароль — минимум 4 символа");
+  if (fresh.length > 32)   return fail("Слишком длинный пароль — максимум 32 символа");
+  if (/\s/.test(fresh))    return fail("Пароль не должен содержать пробелов");
+  if (fresh !== repeat)    return fail("Пароли не совпадают");
+
+  btn.disabled = true;
+  btn.textContent = "Сохраняю...";
+
+  const r = await fetch("/", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({
+      action: "change_password",
+      login: auth.login,
+      currentPassword: current,
+      newPassword: fresh
+    })
+  }).then(res => res.json()).catch(() => null);
+
+  btn.disabled = false;
+  btn.textContent = "Сохранить";
+
+  if (!r || !r.success) {
+    return fail(r ? r.message : "Сервер не отвечает");
+  }
+
+  // Дальнейшие запросы уходят с новым паролем — иначе панель «отвалится»
+  auth.password = fresh;
+  closePassword();
+}
+
+// ---------------- ВЫБОР СУПЕРВАЙЗЕРА (общий вход) ----------------
+function renderSupervisors(list) {
+  const box = document.getElementById("brands-list");
+  document.getElementById("sv-sub").textContent =
+    `${list.length} ${plural(list.length, "супервайзер", "супервайзера", "супервайзеров")}`;
+
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">Супервайзеров не найдено.</div>';
+    return;
+  }
+
+  box.innerHTML = list.map(sv => `
+    <button class="card" data-sv="${sv.supervisor}" data-brand="${sv.brand || ""}">
+      <div class="avatar">${sv.brand || "—"}</div>
+      <div class="grow">
+        <div class="name">${sv.supervisor}</div>
+        <div class="meta">${sv.agents} ${plural(sv.agents, "агент", "агента", "агентов")}</div>
+      </div>
+      <div class="chev">›</div>
+    </button>
+  `).join("");
+
+  box.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => openSupervisor(el.dataset.sv, el.dataset.brand));
+  });
+}
+
+let svTimer = null;
+document.getElementById("sv-search").addEventListener("input", function () {
+  clearTimeout(svTimer);
+  const value = this.value;
+  svTimer = setTimeout(async () => {
+    const r = await call("panel_supervisors", { search: value }).catch(() => null);
+    if (r && r.success) renderSupervisors(r.supervisors || []);
+  }, 250);
+});
+
+async function openSupervisor(supervisor, brand) {
+  auth.supervisor = supervisor;
+  document.getElementById("brand-chip").textContent = brand || "";
+  document.getElementById("agent-search").value = "";
+  document.getElementById("back-brands").classList.toggle("hidden", !auth.isAdmin);
+  document.getElementById("agents-list").innerHTML = '<div class="loading">Загружаю агентов...</div>';
+  document.getElementById("agents-sub").textContent = supervisor;
+  show("screen-agents");
+
+  const r = await call("panel_agents", { supervisor: supervisor, search: "" }).catch(() => null);
+  if (r && r.success) renderAgents(r.agents || []);
+  else document.getElementById("agents-list").innerHTML =
+        `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+}
+
+document.getElementById("back-brands").addEventListener("click", () => show("screen-brands"));
+document.getElementById("logout-brands").addEventListener("click", doLogout);
+
+document.getElementById("logout-btn").addEventListener("click", doLogout);
+
+function doLogout() {
+  const lastLogin = auth.login;
+  auth = { login: "", password: "", brand: "", supervisor: "", isAdmin: false };
+  // Логин оставляем в поле: обычно заходит один и тот же человек
+  document.getElementById("login").value = lastLogin;
+  document.getElementById("password").value = "";
+  document.getElementById("agent-search").value = "";
+  document.getElementById("login-msg").style.display = "none";
+  show("screen-login");
+}
+
+// ---------------- СПИСОК АГЕНТОВ ----------------
+function renderAgents(agents) {
+  const list = document.getElementById("agents-list");
+  const sub = document.getElementById("agents-sub");
+
+  const withProblems = agents.filter(a => a.problems > 0).length;
+  sub.textContent = (auth.supervisor ? auth.supervisor + " · " : "") +
+                    `${agents.length} ${plural(agents.length, "агент", "агента", "агентов")}` +
+                    (withProblems ? `, у ${withProblems} есть проблемы` : ", проблем нет");
+
+  if (!agents.length) {
+    list.innerHTML = '<div class="empty">Агентов не найдено.<br>Проверьте написание логина.</div>';
+    return;
+  }
+
+  list.innerHTML = agents.map(a => `
+    <button class="card ${a.problems ? "problem" : ""}" data-agent="${a.agent}">
+      <div class="avatar ${a.points ? "" : "quiet"}">${initials(a.agent)}</div>
+      <div class="grow">
+        <div class="name">${a.agent}
+          ${a.problems ? `<span class="badge problem">${a.problems} ${plural(a.problems, "проблема", "проблемы", "проблем")}</span>` : ""}
+        </div>
+        <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")}</div>
+      </div>
+      <div class="chev">›</div>
+    </button>
+  `).join("");
+
+  list.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => openAgent(el.dataset.agent));
+  });
+}
+
+// Поиск с задержкой: не дёргаем сервер на каждую букву
+let searchTimer = null;
+document.getElementById("agent-search").addEventListener("input", function () {
+  clearTimeout(searchTimer);
+  const value = this.value;
+  searchTimer = setTimeout(async () => {
+    const r = await call("panel_agents", { supervisor: auth.supervisor, search: value }).catch(() => null);
+    if (r && r.success) renderAgents(r.agents);
+  }, 250);
+});
+
+// ---------------- ТОЧКИ АГЕНТА ----------------
+let currentAgent = "";
+
+async function openAgent(agent) {
+  currentAgent = agent;
+  document.getElementById("point-search").value = "";
+  document.getElementById("point-agent").textContent = agent;
+  document.getElementById("point-count").textContent = "—";
+  document.getElementById("points-list").innerHTML = '<div class="loading">Загружаю точки...</div>';
+  show("screen-points");
+
+  const r = await call("panel_agent_points", { agent: agent, search: "" }).catch(() => null);
+  const list = document.getElementById("points-list");
+
+  if (!r || !r.success) {
+    list.innerHTML = `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+
+  document.getElementById("point-count").textContent = r.points.length;
+  renderPoints(r.points);
+}
+
+function renderPoints(points) {
+  const list = document.getElementById("points-list");
+
+  if (!points.length) {
+    const q = document.getElementById("point-search").value.trim();
+    list.innerHTML = q
+      ? `<div class="empty">Ничего не найдено по запросу «${q}».</div>`
+      : '<div class="empty">У агента пока нет прикреплённых точек.</div>';
+    return;
+  }
+
+  list.innerHTML = points.map(p => {
+    const bad = p.problems && p.problems.length;
+    const labels = (p.problems || []).map(x =>
+      x === "days" ? `${p.dayCount} дней вместо 3` : "два агента одного бренда");
+    return `
+    <div class="card ${bad ? "problem" : "static"}"
+         ${bad ? `data-point="${p.pointCode}" role="button" tabindex="0"` : ""}>
+      <div class="grow">
+        ${bad ? `<div class="problem-title">⚠ ${labels.join(" · ")}</div>` : ""}
+        <div class="name">${p.pointName}
+          ${p.status === 1 ? '<span class="badge passive">пассивная</span>' : ""}
+          ${p.type === "chain" ? '<span class="badge chain">сетевая</span>' : ""}
+        </div>
+        <div class="meta">${p.pointCode}${p.inn ? " · ИНН " + p.inn : ""}</div>
+        ${dayStrip(p.days)}
+      </div>
+      ${bad ? '<div class="chev">›</div>' : ""}
+    </div>`;
+  }).join("");
+
+  list.querySelectorAll("[data-point]").forEach(el => {
+    el.addEventListener("click", () => openFix(el.dataset.point));
+    el.addEventListener("keydown", e => { if (e.key === "Enter") openFix(el.dataset.point); });
+  });
+}
+
+// ---------------- РАЗБОР ПРОБЛЕМНОЙ ТОЧКИ ----------------
+const fixOverlay = document.getElementById("fix-overlay");
+let fixPoint = "";
+
+document.getElementById("fix-close").addEventListener("click", closeFix);
+fixOverlay.addEventListener("click", e => { if (e.target === fixOverlay) closeFix(); });
+
+function closeFix() {
+  fixOverlay.classList.remove("active");
+  // Список точек мог измениться — перезагружаем, чтобы решённая проблема ушла
+  if (currentAgent) openAgent(currentAgent);
+}
+
+function fixMessage(text, ok) {
+  const msg = document.getElementById("fix-msg");
+  msg.className = "msg " + (ok ? "" : "error");
+  msg.textContent = text;
+  msg.style.display = text ? "block" : "none";
+  if (ok) { msg.style.background = "#E6F7F4"; msg.style.color = "#0A7A6B"; }
+}
+
+async function openFix(pointCode) {
+  fixPoint = pointCode;
+  document.getElementById("fix-body").innerHTML = '<div class="loading">Загружаю...</div>';
+  fixMessage("", true);
+  fixOverlay.classList.add("active");
+
+  const r = await call("panel_point_details",
+                       { pointCode: pointCode, agent: currentAgent }).catch(() => null);
+  const body = document.getElementById("fix-body");
+
+  if (!r || !r.success) {
+    body.innerHTML = `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+
+  document.getElementById("fix-point").textContent =
+    r.pointName + " · " + r.pointCode + (r.inn ? " · ИНН " + r.inn : "");
+
+  const hasDays  = r.problems.includes("days");
+  const hasBrand = r.problems.includes("brand");
+  document.getElementById("fix-title").textContent =
+    hasDays ? "Лишние дни визита" : hasBrand ? "Несколько агентов одного бренда" : "Разбор точки";
+
+  let html = "";
+
+  if (hasDays) {
+    // Проблема 1: у агента больше трёх дней — предлагаем снять лишние
+    const over = r.agents.filter(a => a.tooManyDays);
+    over.forEach(a => {
+      html += `<p style="margin:0 0 8px; font-size:13.5px; color:#5A6478;">
+                 У <b>${a.agent}</b> ${a.dayCount} ${plural(a.dayCount, "день", "дня", "дней")}
+                 вместо ${r.maxDays}. Отметьте, какие дни снять:</p>
+               <div data-days-for="${a.agent}" style="margin-bottom:10px;">` +
+        a.dayList.map(d => `
+          <label class="day-pick">
+            <input type="checkbox" value="${d}"> ${d}
+          </label>`).join("") +
+        `</div>
+         <button class="btn-danger" data-unattach-days="${a.agent}"
+                 style="width:100%; padding:11px;">Открепить отмеченные дни</button>`;
+    });
+  }
+
+  if (hasBrand) {
+    if (hasDays) html += '<hr style="border:none; border-top:1px solid #E3E9F2; margin:18px 0;">';
+    html += `<p style="margin:0 0 10px; font-size:13.5px; color:#5A6478;">
+               На точке несколько агентов бренда <b>${r.sameBrandAgents[0].agent.slice(0,2)}</b>.
+               Открепите лишнего — или отметьте точку сетевой, если так и должно быть.</p>`;
+
+    r.sameBrandAgents.forEach(a => {
+      html += `
+        <div class="agent-row ${a.agent === currentAgent ? "me" : ""}">
+          <div class="grow">
+            <div class="name">${a.agent}${a.agent === currentAgent ? " · открыт сейчас" : ""}</div>
+            <div class="meta">${a.days || "нет дней"}</div>
+          </div>
+          <button class="btn-danger" data-unattach-agent="${a.agent}">Открепить</button>
+        </div>`;
+    });
+
+    html += `<button class="btn" id="fix-chain" style="width:100%; margin-top:12px;">
+               🏬 Это сетевая точка
+             </button>
+             <p style="margin:8px 0 0; font-size:12px; color:#6B7688;">
+               У сетевой точки несколько агентов одного бренда — норма, и проблема исчезнет.
+             </p>`;
+  }
+
+  if (!hasDays && !hasBrand) {
+    html = '<div class="empty">Проблем на этой точке больше нет.</div>';
+  }
+
+  body.innerHTML = html;
+
+  body.querySelectorAll("[data-unattach-days]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const agent = btn.dataset.unattachDays;
+      const box = body.querySelector(`[data-days-for="${agent}"]`);
+      const days = [...box.querySelectorAll("input:checked")].map(i => i.value);
+
+      if (!days.length) return fixMessage("Отметьте хотя бы один день", false);
+
+      btn.disabled = true;
+      const res = await call("panel_unattach_days",
+                             { agent: agent, pointCode: fixPoint, days: days }).catch(() => null);
+      btn.disabled = false;
+      if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
+      fixMessage(res.message, true);
+      openFix(fixPoint);
+    });
+  });
+
+  body.querySelectorAll("[data-unattach-agent]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const agent = btn.dataset.unattachAgent;
+      if (!confirm(`Открепить ${agent} от этой точки? Все его дни визита будут сняты.`)) return;
+
+      btn.disabled = true;
+      const res = await call("panel_unattach_agent",
+                             { agent: agent, pointCode: fixPoint }).catch(() => null);
+      btn.disabled = false;
+      if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
+      fixMessage(res.message, true);
+      openFix(fixPoint);
+    });
+  });
+
+  const chainBtn = document.getElementById("fix-chain");
+  if (chainBtn) {
+    chainBtn.addEventListener("click", async () => {
+      chainBtn.disabled = true;
+      const res = await call("panel_set_point_type",
+                             { pointCode: fixPoint, type: "chain" }).catch(() => null);
+      chainBtn.disabled = false;
+      if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
+      fixMessage(res.message, true);
+      openFix(fixPoint);
+    });
+  }
+}
+
+// Поиск по точкам агента: у некоторых их сотни, листать бессмысленно
+let pointTimer = null;
+document.getElementById("point-search").addEventListener("input", function () {
+  clearTimeout(pointTimer);
+  const value = this.value;
+  pointTimer = setTimeout(async () => {
+    const r = await call("panel_agent_points",
+                         { agent: currentAgent, search: value }).catch(() => null);
+    if (r && r.success) renderPoints(r.points);
+  }, 250);
+});
+
+document.getElementById("back-btn").addEventListener("click", () => show("screen-agents"));
+
+// Линия под закреплённой шапкой появляется, только когда под ней что-то
+// уехало: на нетронутой странице она выглядела бы лишней
+window.addEventListener("scroll", () => {
+  const scrolled = window.scrollY > 4;
+  document.querySelectorAll(".sticky").forEach(el => {
+    el.classList.toggle("scrolled", scrolled);
+  });
+}, { passive: true });
+</script>
+</body>
+</html>
