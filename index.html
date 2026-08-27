@@ -27,15 +27,65 @@
         .form-container { max-width: 500px; margin: 0 auto; background: #fff; padding: 24px 20px; border-radius: 14px; border: 1px solid var(--line); }
         h2 { text-align: center; color: #1a1a1a; margin-top: 0; margin-bottom: 8px; font-size: 22px; font-weight: 700; }
         .subtitle { text-align: center; color: #666; margin-bottom: 20px; font-size: 14px; line-height: 1.4; }
-        .section-title { font-size: 1.05em; font-weight: bold; color: var(--navy); border-bottom: 2px solid var(--navy); padding-bottom: 5px; margin-top: 25px; margin-bottom: 15px; }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        
-        @media (max-width: 480px) { .grid-2 { grid-template-columns: 1fr; } }
+        /* Номер выносим в отдельный кружок: он и так есть в тексте шага,
+           а рамка снизу делала форму похожей на таблицу */
+        .section-title {
+            display: flex; align-items: center; gap: 10px;
+            font-size: 15px; font-weight: 700; color: var(--navy);
+            margin: 26px 0 14px; letter-spacing: -0.1px;
+        }
+        .section-title::before {
+            content: attr(data-step);
+            flex: 0 0 24px; height: 24px; border-radius: 7px;
+            background: var(--navy); color: #fff;
+            font-size: 12px; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .section-title::after {
+            content: ""; flex: 1; height: 1px; background: var(--line);
+        }
+        /* minmax(0, 1fr) обязателен: иначе колонка не может стать уже своего
+           содержимого, и длинный вариант в списке («B.SALOONS») распирает
+           правую колонку, а левая сжимается и режет текст */
+        /* auto-fit + minmax: колонки всегда равной ширины и сами
+           складываются в одну на узком экране. Обычные «1fr 1fr» здесь не
+           годятся — длинный вариант в списке («B.SALOONS») распирал правую
+           колонку, а левая сжималась и резала текст. */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+            gap: 12px 14px;
+        }
+        .grid-2 > * { min-width: 0; }
 
         .form-group { margin-bottom: 15px; position: relative; }
         label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 13px; color: #444; }
-        input, select, textarea { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; outline: none; font-family: inherit; background: #fff; }
-        input:focus, select:focus, textarea:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
+        input, select, textarea {
+            width: 100%; padding: 12px 13px;
+            border: 1px solid var(--line); border-radius: 10px;
+            /* 16px — иначе iOS увеличивает страницу при фокусе на поле */
+            font-size: 16px; line-height: 1.3;
+            outline: none; font-family: inherit; color: var(--text);
+            background: #fff; -webkit-appearance: none; appearance: none;
+            transition: border-color .15s ease, box-shadow .15s ease;
+        }
+        input::placeholder, textarea::placeholder { color: #A8B2C3; }
+
+        /* Свой значок вместо системного: на iOS список рисуется синим
+           и выпадает из общего вида */
+        select {
+            padding-right: 36px;
+            background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%236B7688' stroke-width='2'%3E%3Cpath d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 13px center;
+            cursor: pointer;
+        }
+        select:invalid, select option[value=""] { color: #A8B2C3; }
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--navy);
+            box-shadow: 0 0 0 3px rgba(30, 39, 97, .12);
+        }
+        input:read-only { background: #F2F5FA; color: var(--muted); }
         
         /* Стили для выпадающих списков с фильтрацией (Autocomplete) */
         /* Модальное окно с картой */
@@ -106,7 +156,39 @@
         .btn-logout:hover { color: var(--red); border-color: #F0D5D2; }
 
         .screen { display: none; }
-        .screen.active { display: block; }
+        .screen.active {
+            display: block;
+            animation: screen-in .22s ease-out;
+        }
+        @keyframes screen-in {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: none; }
+        }
+
+        /* Нажатие кнопки должно чувствоваться — особенно на телефоне,
+           где нет наведения курсором */
+        .btn-submit, .btn-logout, .map-actions button {
+            transition: background-color .15s ease, transform .08s ease, box-shadow .15s ease;
+        }
+        .btn-submit:active, .map-actions button:active { transform: scale(.985); }
+
+        .status-message { animation: screen-in .2s ease-out; }
+
+        .map-overlay { transition: opacity .18s ease; }
+        .map-overlay.active .map-box { animation: modal-in .2s cubic-bezier(.2,.8,.3,1); }
+        @keyframes modal-in {
+            from { opacity: 0; transform: translateY(10px) scale(.98); }
+            to   { opacity: 1; transform: none; }
+        }
+
+        .autocomplete-items div { transition: background-color .12s ease; }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: .01ms !important;
+                transition-duration: .01ms !important;
+            }
+        }
 
         .status-message { font-size: 13.5px; text-align: center; margin: 10px 0; font-weight: 600; display: none; padding: 11px 13px; border-radius: 9px; }
         .status-message.error { color: var(--red); background-color: #FBEAE8; border: none; }
@@ -327,7 +409,7 @@
         <p class="subtitle">Точка с таким ИНН не найдена. Заполните данные.</p>
         
         <form id="tt-form" autocomplete="off">
-            <div class="section-title">1. Основная информация</div>
+            <div class="section-title" data-step="1">Основная информация</div>
             <div class="form-group">
                 <label for="clientName">Название Клиента (строго латиница)*</label>
                 <input type="text" id="clientName" required placeholder="НАПРИМЕР: SUPERMARKET MAX" autocomplete="off">
@@ -360,7 +442,7 @@
             </div>
             <div id="geo-status" class="status-message"></div>
 
-            <div class="section-title">2. Локация и Классификация (введите для поиска)</div>
+            <div class="section-title" data-step="2">Локация и классификация</div>
             <div class="grid-2">
                 <div class="form-group">
                     <label for="region">Регион*</label>
@@ -394,13 +476,13 @@
                     <label for="category">Категория*</label>
                     <select id="category" required><option value="">— выберите —</option></select>
                 </div>
-                <div class="form-group" style="grid-column: span 2;">
+                <div class="form-group" style="grid-column: 1 / -1;">
                     <label for="deliveryCode">Код доставщика*</label>
                     <select id="deliveryCode" required><option value="">— сначала выберите область —</option></select>
                 </div>
             </div>
 
-            <div class="section-title">3. Закрепление торгового представителя</div>
+            <div class="section-title" data-step="3">Дни визита</div>
             <div class="grid-2">
                 <div class="form-group">
                     <label for="agentLogin">Логин агента*</label>
@@ -443,7 +525,7 @@
                 </select>
             </div>
 
-                <div class="section-title">4. Дополнительно</div>
+                <div class="section-title" data-step="4">Комментарий</div>
                 <div class="form-group">
                     <label for="comments">Комментарии</label>
                     <textarea id="comments" rows="3" placeholder="Введите комментарий..."></textarea>

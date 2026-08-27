@@ -87,7 +87,8 @@
   .search input {
     width: 100%; padding: 13px 14px 13px 40px;
     border: 1px solid var(--line); border-radius: 10px;
-    font-size: 15px; background: #fff; font-family: inherit;
+    /* 16px — иначе iOS увеличивает страницу при фокусе на поле */
+    font-size: 16px; background: #fff; font-family: inherit;
   }
   .search input:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
   .search svg { position: absolute; left: 13px; top: 13px; opacity: .45; }
@@ -208,7 +209,7 @@
   .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
   .field input {
     width: 100%; padding: 12px 13px; border: 1px solid var(--line);
-    border-radius: 9px; font-size: 15px; font-family: inherit;
+    border-radius: 9px; font-size: 16px; font-family: inherit;
   }
   .field input:focus { outline: 2px solid var(--navy); outline-offset: -1px; border-color: transparent; }
   .btn {
@@ -227,8 +228,44 @@
 
   .hidden { display: none; }
 
+  /* Переходы: экран проявляется, карточки отзываются на нажатие,
+     окно приезжает снизу — на телефоне это главный признак отклика */
+  #screen-login, #screen-brands, #screen-agents, #screen-points {
+    animation: screen-in .22s ease-out;
+  }
+  @keyframes screen-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .card { animation: card-in .18s ease-out both; }
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .overlay { transition: opacity .18s ease; }
+  .overlay.active .modal { animation: modal-in .2s cubic-bezier(.2,.8,.3,1); }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(12px) scale(.98); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .btn, .btn-danger, .logout { transition: background-color .15s ease, border-color .15s ease, transform .08s ease; }
+  .btn:active, .btn-danger:active, .logout:active { transform: scale(.985); }
+
+  .day-pick { transition: border-color .12s ease, background-color .12s ease; }
+  .search input { transition: border-color .15s ease, box-shadow .15s ease; }
+  .search input:focus, .field input:focus {
+    outline: none; border-color: var(--navy);
+    box-shadow: 0 0 0 3px rgba(30, 39, 97, .12);
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .card { transition: none; }
+    *, *::before, *::after {
+      animation-duration: .01ms !important;
+      transition-duration: .01ms !important;
+    }
   }
 </style>
 </head>
