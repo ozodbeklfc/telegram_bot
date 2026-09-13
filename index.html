@@ -1330,8 +1330,11 @@
         if (enteredLogin === PANEL_LOGIN && enteredPassword === PANEL_PASSWORD) {
             const status = document.getElementById('auth-status');
             status.className = 'status-message success';
-            status.textContent = "Открываю панель бренда...";
+            status.textContent = "Открываю панель супервайзера...";
             status.style.display = 'block';
+            // Это просто дверь: пропуск здесь не выдаём, супервайзер входит
+            // в панели под своим логином
+            sessionStorage.removeItem('panel_token');
             setTimeout(() => { window.location.href = '/admin'; }, 600);
             return;
         }
@@ -1357,13 +1360,26 @@
             
 
             // Супервайзеры и админы работают в своей панели и точки не
-            // прикрепляют. Проверяем роль ПОСЛЕ ответа сервера: она хранится
+            // прикрепляют. Роль проверяем ПОСЛЕ ответа сервера: она хранится
             // в базе, а по виду логина её не угадать.
             if (result.success && (result.role === 'admin' || result.role === 'supervisor')) {
                 statusDiv.className = 'status-message success';
-                statusDiv.textContent = "Это вход для агентов. Открываю панель супервайзера...";
+                statusDiv.textContent = "Открываю панель супервайзера...";
                 statusDiv.style.display = 'block';
-                setTimeout(() => { window.location.href = '/admin'; }, 900);
+
+                // Берём пропуск и кладём его для панели: она откроется уже
+                // готовой, пароль вводить второй раз не придётся. Через адрес
+                // пароль не передаём — он остался бы в истории браузера.
+                try {
+                    const pass = await fetch(WEB_APP_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify({ action: 'panel_login', login: login, password: password })
+                    }).then(r => r.json());
+                    if (pass && pass.success) sessionStorage.setItem('panel_token', pass.token);
+                } catch (e) { /* не вышло — панель просто попросит войти */ }
+
+                setTimeout(() => { window.location.href = '/admin'; }, 600);
                 return;
             }
 

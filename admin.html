@@ -438,18 +438,38 @@ function dayStrip(daysText) {
   ).join("") + '</div>';
 }
 
-// Учётные данные админа держим только в памяти вкладки: закрыл — вышел
-let auth = { login: "", password: "", brand: "", supervisor: "", isAdmin: false };
+// Пропуск в панель. Живёт в sessionStorage: переживает переход из
+// приложения агента и обновление страницы, но исчезает при закрытии вкладки.
+// Пароль здесь не хранится вообще.
+const TOKEN_KEY = "panel_token";
+let auth = { token: "", login: "", brand: "", supervisor: "", isAdmin: false };
+
+function saveToken(t) {
+  auth.token = t || "";
+  try { t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+}
+
+function readToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
+}
 
 async function call(action, extra) {
   const res = await fetch("/", {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(Object.assign({
-      action: action, login: auth.login, password: auth.password
-    }, extra || {}))
+    body: JSON.stringify(Object.assign({ action: action, token: auth.token }, extra || {}))
   });
-  return await res.json();
+  const data = await res.json();
+
+  // Пропуск протух — возвращаем на экран входа, а не показываем пустоту
+  if (data && data.expired) {
+    saveToken("");
+    show("screen-login");
+    const msg = document.getElementById("login-msg");
+    msg.className = "msg error";
+    msg.textContent = data.message;
+  }
+  return data;
 }
 
 function show(id) {
@@ -488,14 +508,26 @@ try {
   }
 } catch (e) { /* приватный режим — просто не запоминаем */ }
 
+// Если пропуск уже есть — например, его положило приложение агента
+// перед переходом сюда — входим сразу, без повторного ввода пароля
+(async function autoLogin() {
+  const t = readToken();
+  if (!t) return;
+  auth.token = t;
+  const r = await call("panel_start", {}).catch(() => null);
+  if (!r || !r.success) { saveToken(""); return; }
+  auth.login = (r.login || "").toUpperCase();
+  enterPanel(r);
+})();
+
 async function doLogin() {
   const btn = document.getElementById("login-btn");
   const msg = document.getElementById("login-msg");
 
   auth.login = document.getElementById("login").value.trim();
-  auth.password = document.getElementById("password").value;
+  const password = document.getElementById("password").value;
 
-  if (!auth.login || !auth.password) {
+  if (!auth.login || !password) {
     msg.className = "msg error";
     msg.textContent = "Введите логин и пароль";
     return;
@@ -505,6 +537,21 @@ async function doLogin() {
   btn.textContent = "Проверяю...";
   msg.style.display = "none";
 
+  const auth_res = await fetch("/", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action: "panel_login", login: auth.login, password: password })
+  }).then(x => x.json()).catch(() => null);
+
+  if (!auth_res || !auth_res.success) {
+    btn.disabled = false;
+    btn.textContent = "Войти";
+    msg.className = "msg error";
+    msg.textContent = auth_res ? auth_res.message : "Сервер не отвечает. Попробуйте ещё раз.";
+    return;
+  }
+
+  saveToken(auth_res.token);
   const r = await call("panel_start", {}).catch(() => null);
 
   btn.disabled = false;
@@ -513,7 +560,6 @@ async function doLogin() {
   if (!r || !r.success) {
     msg.className = "msg error";
     msg.textContent = r ? r.message : "Сервер не отвечает. Попробуйте ещё раз.";
-    auth.password = "";
     return;
   }
 
@@ -526,13 +572,25 @@ async function doLogin() {
   document.getElementById("who-agents").textContent = auth.login.toUpperCase();
   document.getElementById("who-brands").textContent = auth.login.toUpperCase();
 
+  enterPanel(r);
+}
+
+// Общий вход в панель: сюда приходят и после ввода пароля, и по готовому
+// пропуску из приложения агента
+function enterPanel(r) {
+  auth.isAdmin = !!r.isAdmin;
+  const who = (auth.login || r.login || "").toUpperCase();
+  auth.login = who;
+
+  // Логин виден постоянно: супервайзеров много, важно понимать, под кем сидишь
+  document.getElementById("who-agents").textContent = who;
+  document.getElementById("who-brands").textContent = who;
+
   if (r.isAdmin) {
-    // Общий логин: сначала выбираем супервайзера
     renderSupervisors(r.supervisors || []);
     show("screen-brands");
   } else {
-    // Вошёл супервайзер — сразу его агенты
-    auth.supervisor = auth.login.toUpperCase();
+    auth.supervisor = who;
     document.getElementById("brand-chip").textContent = r.brand || "";
     document.getElementById("back-brands").classList.add("hidden");
     renderAgents(r.agents || []);
@@ -590,16 +648,8 @@ async function savePassword() {
   btn.disabled = true;
   btn.textContent = "Сохраняю...";
 
-  const r = await fetch("/", {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
-      action: "change_password",
-      login: auth.login,
-      currentPassword: current,
-      newPassword: fresh
-    })
-  }).then(res => res.json()).catch(() => null);
+  const r = await call("panel_change_password",
+                       { currentPassword: current, newPassword: fresh }).catch(() => null);
 
   btn.disabled = false;
   btn.textContent = "Сохранить";
@@ -608,8 +658,7 @@ async function savePassword() {
     return fail(r ? r.message : "Сервер не отвечает");
   }
 
-  // Дальнейшие запросы уходят с новым паролем — иначе панель «отвалится»
-  auth.password = fresh;
+  // Пропуск остаётся прежним, перезаходить не нужно
   closePassword();
 }
 
@@ -672,7 +721,9 @@ document.getElementById("logout-btn").addEventListener("click", doLogout);
 
 function doLogout() {
   const lastLogin = auth.login;
-  auth = { login: "", password: "", brand: "", supervisor: "", isAdmin: false };
+  call("panel_logout", {}).catch(() => {});
+  saveToken("");
+  auth = { token: "", login: "", brand: "", supervisor: "", isAdmin: false };
   // Логин оставляем в поле: обычно заходит один и тот же человек
   document.getElementById("login").value = lastLogin;
   document.getElementById("password").value = "";

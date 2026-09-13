@@ -12,6 +12,7 @@
 
 import logging
 import re
+import secrets
 
 import asyncpg
 
@@ -560,6 +561,112 @@ async def set_point_type(point_code: str, point_type: str) -> dict:
                        else "Точка отмечена как обычная"}
 
 
+# Сколько живёт пропуск в панель. Сутки: смена достаточно длинная,
+# а вечных пропусков быть не должно.
+PANEL_SESSION_HOURS = 24
+
+
+async def _ensure_sessions_table(conn):
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS panel_sessions (
+            token      TEXT PRIMARY KEY,
+            login      TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL
+        )
+    """)
+
+
+async def panel_login(login_value: str, password: str) -> dict:
+    """
+    Вход в панель: проверяет пароль и выдаёт пропуск (токен).
+
+    Дальше панель работает по токену, а логин с паролем больше никуда не
+    передаются. Это и позволяет открывать панель из приложения агента без
+    повторного ввода: пароль не пришлось бы тащить через адресную строку.
+    """
+    auth = await _check_panel(login_value, password)
+    if not auth.get("success"):
+        return auth
+
+    token = secrets.token_urlsafe(24)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await _ensure_sessions_table(conn)
+            await conn.execute(
+                """
+                INSERT INTO panel_sessions (token, login, expires_at)
+                VALUES ($1, $2, now() + ($3 || ' hours')::interval)
+                """,
+                token, login_value.strip().lower(), str(PANEL_SESSION_HOURS),
+            )
+            # Заодно подчищаем просроченные, чтобы таблица не росла
+            await conn.execute("DELETE FROM panel_sessions WHERE expires_at < now()")
+    except Exception as e:
+        return _db_error(e)
+
+    return {**auth, "token": token}
+
+
+async def _check_token(token: str) -> dict:
+    """Кто пришёл с этим пропуском."""
+    token = (token or "").strip()
+    if not token:
+        return {"success": False, "message": "Нужно войти заново"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await _ensure_sessions_table(conn)
+            login_value = await conn.fetchval(
+                "SELECT login FROM panel_sessions WHERE token = $1 AND expires_at > now()",
+                token,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    if not login_value:
+        return {"success": False, "message": "Сессия истекла — войдите заново", "expired": True}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(role, 'agent') AS role, brand
+                  FROM users WHERE login = $1
+                """,
+                login_value,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    if row is None or row["role"] not in ("supervisor", "admin"):
+        return {"success": False, "message": "Недостаточно прав"}
+
+    return {
+        "success": True,
+        "role": row["role"],
+        "isAdmin": row["role"] == "admin",
+        "supervisor": login_value.upper() if row["role"] == "supervisor" else "",
+        "brand": row["brand"] or "",
+        "login": login_value,
+    }
+
+
+async def panel_logout(token: str) -> dict:
+    """Гасит пропуск при выходе."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await _ensure_sessions_table(conn)
+            await conn.execute("DELETE FROM panel_sessions WHERE token = $1", (token or "").strip())
+    except Exception as e:
+        return _db_error(e)
+    return {"success": True}
+
+
 async def _check_panel(login_value: str, password: str) -> dict:
     """
     Проверяет доступ в панель и возвращает роль ИЗ БАЗЫ.
@@ -601,26 +708,26 @@ async def _agent_allowed(auth: dict, agent: str) -> bool:
         return False
 
 
-async def panel_start(login_value: str, password: str) -> dict:
-    """Первый экран панели: супервайзеру — его агенты, админу — список супервайзеров."""
-    auth = await _check_panel(login_value, password)
+async def panel_start(token: str) -> dict:
+    """Первый экран: супервайзеру — его агенты, админу — список супервайзеров."""
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
 
     if auth["isAdmin"]:
         result = await list_supervisors()
         if result.get("success"):
-            result.update({"isAdmin": True, "supervisor": ""})
+            result.update({"isAdmin": True, "supervisor": "", "login": auth["login"]})
         return result
 
     result = await list_agents(auth["supervisor"])
     if result.get("success"):
-        result.update({"isAdmin": False, "brand": auth["brand"]})
+        result.update({"isAdmin": False, "brand": auth["brand"], "login": auth["login"]})
     return result
 
 
-async def panel_supervisors(login_value: str, password: str, search: str = "") -> dict:
-    auth = await _check_panel(login_value, password)
+async def panel_supervisors(token: str, search: str = "") -> dict:
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
     if not auth["isAdmin"]:
@@ -628,18 +735,16 @@ async def panel_supervisors(login_value: str, password: str, search: str = "") -
     return await list_supervisors(search)
 
 
-async def panel_agents(login_value: str, password: str,
-                       supervisor: str = "", search: str = "") -> dict:
-    auth = await _check_panel(login_value, password)
+async def panel_agents(token: str, supervisor: str = "", search: str = "") -> dict:
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
     target = supervisor if auth["isAdmin"] else auth["supervisor"]
     return await list_agents(target, search)
 
 
-async def panel_agent_points(login_value: str, password: str, agent: str,
-                             search: str = "") -> dict:
-    auth = await _check_panel(login_value, password)
+async def panel_agent_points(token: str, agent: str, search: str = "") -> dict:
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
     if not await _agent_allowed(auth, agent):
@@ -647,9 +752,8 @@ async def panel_agent_points(login_value: str, password: str, agent: str,
     return await agent_points(agent, "", search)
 
 
-async def panel_point_details(login_value: str, password: str,
-                              point_code: str, agent: str = "") -> dict:
-    auth = await _check_panel(login_value, password)
+async def panel_point_details(token: str, point_code: str, agent: str = "") -> dict:
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
     if agent and not await _agent_allowed(auth, agent):
@@ -657,9 +761,8 @@ async def panel_point_details(login_value: str, password: str,
     return await point_details(point_code, agent)
 
 
-async def panel_unattach_days(login_value: str, password: str, agent: str,
-                              point_code: str, days: list) -> dict:
-    auth = await _check_panel(login_value, password)
+async def panel_unattach_days(token: str, agent: str, point_code: str, days: list) -> dict:
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
     if not await _agent_allowed(auth, agent):
@@ -667,13 +770,12 @@ async def panel_unattach_days(login_value: str, password: str, agent: str,
     return await unattach_days(agent, point_code, days)
 
 
-async def panel_unattach_agent(login_value: str, password: str, agent: str,
-                               point_code: str) -> dict:
-    auth = await _check_panel(login_value, password)
+async def panel_unattach_agent(token: str, agent: str, point_code: str) -> dict:
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    # Открепить чужого агента супервайзер может только на своей точке —
-    # то есть там, где стоит кто-то из его подчинённых
+    # Чужого агента супервайзер может открепить только на точке, где стоит
+    # кто-то из его подчинённых
     if not auth["isAdmin"] and not await _agent_allowed(auth, agent):
         detail = await point_details(point_code)
         mine = False
@@ -686,12 +788,19 @@ async def panel_unattach_agent(login_value: str, password: str, agent: str,
     return await unattach_agent(agent, point_code)
 
 
-async def panel_set_point_type(login_value: str, password: str,
-                               point_code: str, point_type: str) -> dict:
-    auth = await _check_panel(login_value, password)
+async def panel_set_point_type(token: str, point_code: str, point_type: str) -> dict:
+    auth = await _check_token(token)
     if not auth.get("success"):
         return auth
     return await set_point_type(point_code, point_type)
+
+
+async def panel_change_password(token: str, current_password: str, new_password: str) -> dict:
+    """Смена пароля из панели — по пропуску, логин берётся из сессии."""
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    return await change_password(auth["login"], current_password, new_password)
 
 
 # ======================================================================

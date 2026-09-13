@@ -97,45 +97,54 @@ async def handle_api(request: web.Request) -> web.Response:
             if result.get("success"):
                 await notify.notify_admin(notify.build_add_text(payload))
 
-        elif action == "panel_start":
-            result = await api.panel_start(
+        elif action == "panel_login":
+            result = await api.panel_login(
                 payload.get("login", ""), payload.get("password", ""))
+
+        elif action == "panel_logout":
+            result = await api.panel_logout(payload.get("token", ""))
+
+        elif action == "panel_start":
+            result = await api.panel_start(payload.get("token", ""))
 
         elif action == "panel_supervisors":
             result = await api.panel_supervisors(
-                payload.get("login", ""), payload.get("password", ""),
-                payload.get("search", ""))
+                payload.get("token", ""), payload.get("search", ""))
 
         elif action == "panel_agents":
             result = await api.panel_agents(
-                payload.get("login", ""), payload.get("password", ""),
-                payload.get("supervisor", ""), payload.get("search", ""))
+                payload.get("token", ""), payload.get("supervisor", ""),
+                payload.get("search", ""))
 
         elif action == "panel_agent_points":
             result = await api.panel_agent_points(
-                payload.get("login", ""), payload.get("password", ""),
-                payload.get("agent", ""), payload.get("search", ""))
+                payload.get("token", ""), payload.get("agent", ""),
+                payload.get("search", ""))
 
         elif action == "panel_point_details":
             result = await api.panel_point_details(
-                payload.get("login", ""), payload.get("password", ""),
-                payload.get("pointCode", ""), payload.get("agent", ""))
+                payload.get("token", ""), payload.get("pointCode", ""),
+                payload.get("agent", ""))
 
         elif action == "panel_unattach_days":
             result = await api.panel_unattach_days(
-                payload.get("login", ""), payload.get("password", ""),
-                payload.get("agent", ""), payload.get("pointCode", ""),
-                payload.get("days", []))
+                payload.get("token", ""), payload.get("agent", ""),
+                payload.get("pointCode", ""), payload.get("days", []))
 
         elif action == "panel_unattach_agent":
             result = await api.panel_unattach_agent(
-                payload.get("login", ""), payload.get("password", ""),
-                payload.get("agent", ""), payload.get("pointCode", ""))
+                payload.get("token", ""), payload.get("agent", ""),
+                payload.get("pointCode", ""))
 
         elif action == "panel_set_point_type":
             result = await api.panel_set_point_type(
-                payload.get("login", ""), payload.get("password", ""),
-                payload.get("pointCode", ""), payload.get("type", ""))
+                payload.get("token", ""), payload.get("pointCode", ""),
+                payload.get("type", ""))
+
+        elif action == "panel_change_password":
+            result = await api.panel_change_password(
+                payload.get("token", ""), payload.get("currentPassword", ""),
+                payload.get("newPassword", ""))
 
         elif action == "check_attach":
             result = await api.check_attach_allowed(
