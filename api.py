@@ -1155,6 +1155,10 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
     днями (так и случилось: сайт ограничивал выбор занятых дней, но не их
     количество, и у агента набралось пять дней вместо трёх).
     """
+    denied = await _require_agent(agent)
+    if denied:
+        return denied
+
     brand = agent_brand(agent)
     days = split_days(visit_day)
 
@@ -1230,6 +1234,41 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
     return {"success": True, "message": "Точка успешно прикреплена к вам!"}
 
 
+async def _require_agent(login_value: str) -> dict | None:
+    """
+    Точки прикрепляет и добавляет только агент.
+
+    Проверка на сервере, а не в интерфейсе: перенаправление в панель — это
+    удобство, и одна забытая роль в списке на странице уже приводила к тому,
+    что оператор оказывался на экране агента. Здесь роль берётся из базы,
+    поэтому подставить чужой логин в запрос бесполезно.
+
+    Возвращает None, если всё в порядке, иначе готовый отказ.
+    """
+    login_value = (login_value or "").strip().lower()
+    if not login_value:
+        return {"success": False, "message": "Не указан агент"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            role = await conn.fetchval(
+                "SELECT COALESCE(role, 'agent') FROM users WHERE lower(login) = $1",
+                login_value,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    if role is None:
+        return {"success": False, "message": "Такого агента нет в базе"}
+
+    if role != "agent":
+        return {"success": False,
+                "message": "Этот логин не агентский — точки прикрепляют только агенты"}
+
+    return None
+
+
 def attach_denied_text(check: dict) -> str:
     """
     Один текст отказа для всех клиентов: бот, сайт и повторная проверка
@@ -1265,6 +1304,10 @@ async def add_tt(data: dict) -> dict:
     (clientName, deliveryCode, visitDay), поэтому здесь они раскладываются
     по колонкам таблицы add_requests.
     """
+    denied = await _require_agent(data.get("agent"))
+    if denied:
+        return denied
+
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
