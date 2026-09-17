@@ -10,13 +10,20 @@
 которое bot.py уже умеет показывать пользователю.
 """
 
+import json
 import logging
 import re
 import secrets
 
 import asyncpg
 
+import notify
+
 from config import DATABASE_URL
+# Рабочие дни недели берём из того же справочника, что и бот: если список
+# когда-нибудь изменится (появится суббота), правило пересчёта визитов
+# не должно остаться с прежними пятью днями.
+from data import DAYS as WORK_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +108,11 @@ async def login(login_value: str, password: str) -> dict:
                 SELECT login,
                        COALESCE(role, 'agent') AS role,
                        -- У агента бренд всегда есть: если колонка пустая,
-                       -- берём первые две буквы логина. У админа пустой
-                       -- бренд означает «общий доступ ко всем брендам»,
-                       -- поэтому подставлять туда буквы логина нельзя.
-                       CASE WHEN COALESCE(role, 'agent') = 'admin'
+                       -- берём первые две буквы логина. У админа и оператора
+                       -- пустой бренд означает «все бренды», поэтому
+                       -- подставлять туда буквы логина нельзя: иначе
+                       -- у логина operator появился бы «бренд OP».
+                       CASE WHEN COALESCE(role, 'agent') IN ('admin', 'operator')
                             THEN brand
                             ELSE COALESCE(brand, upper(left(login, 2)))
                        END AS brand,
@@ -399,11 +407,22 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
     # Проблемные — вверх списка, внутри группы по алфавиту
     points.sort(key=lambda p: (not p["problems"], p["pointName"]))
 
+    # Нагрузка считается по ВСЕЙ базе агента, а не по показанному списку:
+    # при поиске в списке остаётся пара точек, а лимит всё равно про все
+    load = await agent_load(agent)
+
     return {
         "success": True,
         "agent": agent,
         "points": points,
         "problemCount": sum(1 for p in points if p["problems"]),
+        # Правила и факт для шапки панели
+        "pointCount": load.get("pointCount", 0),
+        "dayLoad": load.get("dayLoad", {}),
+        "workDays": list(WORK_DAYS),
+        "maxPoints": MAX_POINTS_PER_AGENT,
+        "maxVisitsPerDay": MAX_VISITS_PER_DAY,
+        "maxDays": MAX_VISIT_DAYS,
     }
 
 
@@ -642,13 +661,14 @@ async def _check_token(token: str) -> dict:
     except Exception as e:
         return _db_error(e)
 
-    if row is None or row["role"] not in ("supervisor", "admin"):
+    if row is None or row["role"] not in ("supervisor", "admin", "operator"):
         return {"success": False, "message": "Недостаточно прав"}
 
     return {
         "success": True,
         "role": row["role"],
         "isAdmin": row["role"] == "admin",
+        "isOperator": row["role"] == "operator",
         "supervisor": login_value.upper() if row["role"] == "supervisor" else "",
         "brand": row["brand"] or "",
         "login": login_value,
@@ -680,13 +700,14 @@ async def _check_panel(login_value: str, password: str) -> dict:
         return {"success": False, "message": "Неверный логин или пароль"}
 
     role = auth.get("role")
-    if role not in ("supervisor", "admin"):
+    if role not in ("supervisor", "admin", "operator"):
         return {"success": False, "message": "Недостаточно прав"}
 
     return {
         "success": True,
         "role": role,
         "isAdmin": role == "admin",
+        "isOperator": role == "operator",
         "supervisor": login_value.strip().upper() if role == "supervisor" else "",
         "brand": auth.get("brand") or "",
     }
@@ -709,20 +730,34 @@ async def _agent_allowed(auth: dict, agent: str) -> bool:
 
 
 async def panel_start(token: str) -> dict:
-    """Первый экран: супервайзеру — его агенты, админу — список супервайзеров."""
+    """
+    Первый экран зависит от роли:
+      оператор    — лист заявок, больше ему ничего не нужно;
+      админ       — список супервайзеров (и доступ к заявкам через вкладки);
+      супервайзер — его агенты.
+    """
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
 
+    if auth["isOperator"]:
+        result = await pending_requests()
+        if result.get("success"):
+            result.update({"isAdmin": False, "isOperator": True,
+                           "login": auth["login"]})
+        return result
+
     if auth["isAdmin"]:
         result = await list_supervisors()
         if result.get("success"):
-            result.update({"isAdmin": True, "supervisor": "", "login": auth["login"]})
+            result.update({"isAdmin": True, "isOperator": False,
+                           "supervisor": "", "login": auth["login"]})
         return result
 
     result = await list_agents(auth["supervisor"])
     if result.get("success"):
-        result.update({"isAdmin": False, "brand": auth["brand"], "login": auth["login"]})
+        result.update({"isAdmin": False, "isOperator": False,
+                       "brand": auth["brand"], "login": auth["login"]})
     return result
 
 
@@ -874,6 +909,24 @@ async def check_inn(inn: str) -> dict:
 # Сколько дней визита агент может занять на одной точке
 MAX_VISIT_DAYS = 3
 
+# ----------------------------------------------------------------------
+# ЛИМИТЫ НАГРУЗКИ АГЕНТА
+#
+# Правила установлены менеджментом и проверяются ЗДЕСЬ, на сервере, а не
+# в интерфейсе: бот и сайт — два независимых клиента, и любой из них может
+# отправить запрос в обход формы.
+#
+# Старые перекосы (у кого уже 200 точек) правилами не ломаются: лимит
+# останавливает только НОВОЕ прикрепление. Разбирать накопленное —
+# работа супервайзера в панели.
+# ----------------------------------------------------------------------
+MAX_POINTS_PER_AGENT = 150      # не больше 150 торговых точек на агента
+MAX_VISITS_PER_DAY = 30         # не больше 30 визитов в один день недели
+
+# Узбекистан круглый год живёт в UTC+5, перевода часов нет.
+# Нужен для «сегодняшнего дня визита» и для архива по дням.
+TIMEZONE = "Asia/Tashkent"
+
 
 def agent_brand(agent: str) -> str:
     """
@@ -891,22 +944,81 @@ def split_days(visit_day: str) -> list[str]:
     return [d.strip() for d in (visit_day or "").split(",") if d.strip()]
 
 
+async def agent_load(agent: str) -> dict:
+    """
+    Текущая нагрузка агента: сколько у него точек и сколько визитов
+    в каждый день недели.
+
+    Визит считается по РАЗНЫМ точкам: если на одной точке у агента
+    записан понедельник дважды (такое осталось от старых загрузок),
+    поехать он всё равно может один раз.
+    """
+    agent = (agent or "").strip().upper()
+    if not agent:
+        return {"success": False, "message": "Не указан агент"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            points = await conn.fetchval(
+                "SELECT count(DISTINCT point_code) FROM attachments WHERE upper(agent) = $1",
+                agent,
+            )
+            rows = await conn.fetch(
+                """
+                SELECT visit_day, count(DISTINCT point_code) AS visits
+                  FROM attachments
+                 WHERE upper(agent) = $1
+                   AND visit_day IS NOT NULL AND visit_day <> ''
+                 GROUP BY visit_day
+                """,
+                agent,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    day_load = {r["visit_day"].strip(): r["visits"] for r in rows if r["visit_day"]}
+
+    return {
+        "success": True,
+        "agent": agent,
+        "pointCount": points or 0,
+        "dayLoad": day_load,
+        "fullDays": sorted(d for d, n in day_load.items() if n >= MAX_VISITS_PER_DAY),
+        "maxPoints": MAX_POINTS_PER_AGENT,
+        "maxVisitsPerDay": MAX_VISITS_PER_DAY,
+        "maxDays": MAX_VISIT_DAYS,
+    }
+
+
 async def check_attach_allowed(point_code: str, agent: str) -> dict:
     """
     Можно ли агенту прикрепиться к этой точке.
 
-    Два правила:
+    Четыре правила:
       1. Точка занята другим агентом того же бренда — прикрепление запрещено
          (OR0104 блокирует OR0111, но не UL1111).
       2. У самого агента на точке не больше MAX_VISIT_DAYS дней суммарно.
          Если уже занято два дня, третий добавить можно, четвёртый — нет.
+      3. Не больше MAX_POINTS_PER_AGENT точек на агента. Правило касается
+         только НОВЫХ для агента точек: добавить день на точку, которая у
+         него уже есть, можно и на лимите — число точек от этого не растёт.
+      4. Не больше MAX_VISITS_PER_DAY визитов в один день недели.
+         Переполненные дни не запрещают прикрепление целиком — они просто
+         исчезают из выбора (fullDays). Запрет только если свободных
+         дней не осталось совсем.
 
     Возвращает:
-      allowed     — можно ли продолжать
-      reason      — 'brand' | 'limit' | None
-      blockedBy   — логин агента, занявшего точку (для reason='brand')
-      myDays      — дни, которые агент уже занял на этой точке
-      remaining   — сколько дней ещё можно выбрать
+      allowed         — можно ли продолжать
+      reason          — 'brand' | 'limit' | 'points' | 'day_limit' | None
+      blockedBy       — логин агента, занявшего точку (для reason='brand')
+      myDays          — дни, которые агент уже занял на этой точке
+      remaining       — сколько дней ещё можно выбрать
+      fullDays        — дни, где у агента уже 30 визитов (выбирать нельзя)
+      freeDays        — дни, которые реально доступны к выбору
+      pointCount      — сколько точек у агента сейчас
+      maxPoints       — лимит точек
+      maxVisitsPerDay — лимит визитов в день
     """
     brand = agent_brand(agent)
 
@@ -929,6 +1041,19 @@ async def check_attach_allowed(point_code: str, agent: str) -> dict:
     except Exception as e:
         return _db_error(e)
 
+    load = await agent_load(agent)
+    if not load.get("success"):
+        return load
+
+    limits = {
+        "pointCount": load["pointCount"],
+        "maxPoints": MAX_POINTS_PER_AGENT,
+        "maxVisitsPerDay": MAX_VISITS_PER_DAY,
+        "maxDays": MAX_VISIT_DAYS,
+        "dayLoad": load["dayLoad"],
+        "fullDays": load["fullDays"],
+    }
+
     is_chain = point_type == "chain"
 
     my_days, other_agent = [], None
@@ -943,24 +1068,33 @@ async def check_attach_allowed(point_code: str, agent: str) -> dict:
     # Один и тот же день мог попасть в две записи — считаем уникальные
     my_days = list(dict.fromkeys(my_days))
 
-    if other_agent:
+    def answer(allowed, reason, **extra):
         return {
-            "success": True, "allowed": False, "reason": "brand",
-            "blockedBy": other_agent, "myDays": my_days,
-            "remaining": 0,
+            "success": True, "allowed": allowed, "reason": reason,
+            "blockedBy": None, "myDays": my_days, "remaining": 0,
+            "freeDays": [], **limits, **extra,
         }
+
+    if other_agent:
+        return answer(False, "brand", blockedBy=other_agent)
+
+    # Правило 3. Точка новая для агента? Тогда она увеличит их число
+    is_new_point = not my_days
+    if is_new_point and load["pointCount"] >= MAX_POINTS_PER_AGENT:
+        return answer(False, "points")
 
     remaining = MAX_VISIT_DAYS - len(my_days)
     if remaining <= 0:
-        return {
-            "success": True, "allowed": False, "reason": "limit",
-            "blockedBy": None, "myDays": my_days, "remaining": 0,
-        }
+        return answer(False, "limit")
 
-    return {
-        "success": True, "allowed": True, "reason": None,
-        "blockedBy": None, "myDays": my_days, "remaining": remaining,
-    }
+    # Правило 4. Дни, где агент уже выбрал норму визитов, недоступны
+    free_days = [d for d in WORK_DAYS
+                 if d not in my_days and d not in load["fullDays"]]
+    if not free_days:
+        return answer(False, "day_limit")
+
+    return answer(True, None, remaining=min(remaining, len(free_days)),
+                  freeDays=free_days)
 
 
 async def search_similar_points(name: str, limit: int = SIMILAR_LIMIT) -> dict:
@@ -1011,7 +1145,8 @@ async def search_similar_points(name: str, limit: int = SIMILAR_LIMIT) -> dict:
 # ПРИКРЕПЛЕНИЕ ТОЧКИ
 # ======================================================================
 
-async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -> dict:
+async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
+                 tg_id: int | None = None, source: str = "") -> dict:
     """
     Прикрепляет точку к агенту.
 
@@ -1039,21 +1174,25 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -
         return check
 
     if not check.get("allowed"):
-        if check.get("reason") == "brand":
-            return {"success": False,
-                    "message": f"В этой точке закреплён другой агент вашего бренда "
-                               f"({check.get('blockedBy')})"}
-        return {"success": False,
-                "message": f"У вас уже {MAX_VISIT_DAYS} дня в этой точке: "
-                           f"{', '.join(check.get('myDays', []))}"}
+        return {"success": False, "message": attach_denied_text(check)}
 
     my_days = check.get("myDays", [])
     remaining = check.get("remaining", MAX_VISIT_DAYS)
+    full_days = check.get("fullDays", [])
 
     duplicates = [d for d in days if d in my_days]
     if duplicates:
         return {"success": False,
                 "message": f"Эти дни у вас уже заняты на этой точке: {', '.join(duplicates)}"}
+
+    # Лимит визитов в день — вторая проверка после check_attach_allowed:
+    # там дни только помечаются переполненными, а здесь уже приходит
+    # конкретный выбор, и его нужно сверить с этой пометкой
+    overloaded = [d for d in days if d in full_days]
+    if overloaded:
+        return {"success": False,
+                "message": f"В {', '.join(overloaded)} у вас уже {MAX_VISITS_PER_DAY} визитов — "
+                           f"это предел на один день. Выберите другой день."}
 
     if len(days) > remaining:
         return {"success": False,
@@ -1076,7 +1215,44 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str) -
     except Exception as e:
         return _db_error(e)
 
+    # Заявка в лист оператора. Прикрепление в базе уже состоялось — оператору
+    # остаётся провести его в учётной системе, и «Готово» отмечает именно это.
+    await create_request({
+        "kind": "attach",
+        "agent": agent,
+        "pointCode": point_code,
+        "pointName": point_name,
+        "visitDay": ", ".join(days),
+        "tgId": tg_id,
+        "source": source,
+    })
+
     return {"success": True, "message": "Точка успешно прикреплена к вам!"}
+
+
+def attach_denied_text(check: dict) -> str:
+    """
+    Один текст отказа для всех клиентов: бот, сайт и повторная проверка
+    внутри attach() должны объяснять запрет одинаково.
+    """
+    reason = check.get("reason")
+
+    if reason == "brand":
+        return (f"В этой точке закреплён другой агент вашего бренда "
+                f"({check.get('blockedBy')})")
+
+    if reason == "points":
+        return (f"У вас уже {check.get('pointCount', MAX_POINTS_PER_AGENT)} торговых точек — "
+                f"это предел ({MAX_POINTS_PER_AGENT}). Чтобы взять новую, "
+                f"освободите лишние через супервайзера.")
+
+    if reason == "day_limit":
+        return (f"Во всех рабочих днях у вас уже по {MAX_VISITS_PER_DAY} визитов — "
+                f"это предел на один день. Свободных дней не осталось.")
+
+    # reason == 'limit'
+    return (f"У вас уже {MAX_VISIT_DAYS} дня в этой точке: "
+            f"{', '.join(check.get('myDays', []))}")
 
 
 # ======================================================================
@@ -1124,4 +1300,437 @@ async def add_tt(data: dict) -> dict:
     except Exception as e:
         return _db_error(e)
 
+    # Заявка в лист оператора: новую точку кто-то должен завести в учётной
+    # системе, и до этого момента агент должен видеть её как «в обработке»
+    await create_request({
+        "kind": "add",
+        "agent": data.get("agent"),
+        "pointName": data.get("clientName"),
+        "inn": data.get("inn"),
+        "visitDay": data.get("visitDay"),
+        "tgId": data.get("tgId"),
+        "source": data.get("source"),
+        "payload": data,
+    })
+
     return {"success": True, "message": "Новая торговая точка успешно добавлена!"}
+
+
+# ======================================================================
+# ЗАЯВКИ ОПЕРАТОРА
+#
+# Очередь обработки: агент отправил заявку — оператор провёл её в учётной
+# системе и отметил «Готово». Сами данные лежат в attachments и
+# add_requests, здесь только состояние обработки.
+# ======================================================================
+
+# Поля, которые в карточке заявки показывать не нужно: агент и дни визита
+# выведены отдельными строками, а служебные ключи запроса оператору
+# ни о чём не говорят
+PAYLOAD_SKIP = {"action", "token", "agent", "tgId", "source", "kind", "visitDay"}
+
+
+async def create_request(data: dict) -> dict:
+    """
+    Кладёт заявку в очередь оператора.
+
+    Ошибка здесь НЕ ломает основной сценарий: прикрепление или добавление
+    точки уже записаны в базу, и агент не должен получить «не получилось»
+    из-за очереди. Поэтому ответ не проверяется вызывающей стороной,
+    а сбой уходит в лог.
+    """
+    agent = (data.get("agent") or "").strip().upper()
+    if not agent:
+        return {"success": False, "message": "Не указан агент"}
+
+    payload = data.get("payload") or {}
+    clean = {k: v for k, v in payload.items()
+             if k not in PAYLOAD_SKIP and v not in (None, "")}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            request_id = await conn.fetchval(
+                """
+                INSERT INTO operator_requests
+                    (kind, agent, agent_brand, tg_id, point_code, point_name,
+                     inn, visit_day, source, payload)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+             RETURNING id
+                """,
+                data.get("kind") or "attach",
+                agent,
+                agent_brand(agent),
+                data.get("tgId"),
+                data.get("pointCode"),
+                data.get("pointName"),
+                data.get("inn"),
+                data.get("visitDay"),
+                data.get("source") or "",
+                json.dumps(clean, ensure_ascii=False),
+            )
+    except Exception as e:
+        logger.exception("Заявку не удалось положить в очередь оператора")
+        return {"success": False, "message": str(e)}
+
+    return {"success": True, "id": request_id}
+
+
+async def remember_tg_id(login_value: str, tg_id: int) -> None:
+    """
+    Запоминает Telegram-адрес агента при входе в бота.
+
+    Без него бот не может написать агенту первым: уведомление о готовности
+    заявки приходит, когда никакого входящего сообщения нет.
+    """
+    if not tg_id:
+        return
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET tg_id = $2 WHERE login = $1",
+                (login_value or "").strip().lower(), int(tg_id),
+            )
+    except Exception:
+        # Вход важнее: если не записалось — агент просто не получит
+        # уведомление, но работать сможет
+        logger.exception("Не удалось запомнить tg_id агента %s", login_value)
+
+
+def _request_row(r) -> dict:
+    return {
+        "id": r["id"],
+        "kind": r["kind"],
+        "kindLabel": "Добавление ТТ" if r["kind"] == "add" else "Прикрепление",
+        "agent": r["agent"],
+        "pointCode": r["point_code"] or "",
+        "pointName": r["point_name"] or "—",
+        "inn": r["inn"] or "",
+        "visitDay": r["visit_day"] or "",
+        "source": r["source"] or "",
+        "status": r["status"],
+        "createdAt": r["created_at"].isoformat() if r["created_at"] else "",
+        "doneAt": r["done_at"].isoformat() if r["done_at"] else "",
+        "doneBy": r["done_by"] or "",
+        "details": dict(json.loads(r["payload"])) if r["payload"] else {},
+    }
+
+
+REQUEST_COLUMNS = """
+    id, kind, agent, point_code, point_name, inn, visit_day,
+    source, status, created_at, done_at, done_by, payload
+"""
+
+
+async def pending_requests(search: str = "", limit: int = 200) -> dict:
+    """Лист оператора: заявки, которые ждут обработки. Новые сверху."""
+    like = f"%{(search or '').strip().upper()}%" if (search or "").strip() else ""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT {REQUEST_COLUMNS}
+                  FROM operator_requests
+                 WHERE status = 'pending'
+                   AND ($1 = ''
+                        OR upper(agent) LIKE $1
+                        OR upper(COALESCE(point_name, '')) LIKE $1
+                        OR COALESCE(point_code, '') LIKE $1
+                        OR COALESCE(inn, '') LIKE $1)
+                 ORDER BY created_at DESC
+                 LIMIT $2
+                """,
+                like, limit,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    return {"success": True, "requests": [_request_row(r) for r in rows]}
+
+
+async def mark_request_done(request_id: int, operator_login: str) -> dict:
+    """
+    Отмечает заявку выполненной и уведомляет агента через бота.
+
+    Условие status = 'pending' в UPDATE защищает от двойного нажатия:
+    если заявку уже закрыл другой оператор, RETURNING вернёт пусто,
+    и второе уведомление агенту не уйдёт.
+    """
+    try:
+        request_id = int(request_id)
+    except (TypeError, ValueError):
+        return {"success": False, "message": "Не указана заявка"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE operator_requests
+                   SET status = 'done', done_at = now(), done_by = $2
+                 WHERE id = $1 AND status = 'pending'
+             RETURNING id, kind, agent, point_name, point_code, visit_day, tg_id
+                """,
+                request_id, (operator_login or "").strip().upper(),
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    if row is None:
+        return {"success": False, "message": "Заявка уже обработана — обновите лист"}
+
+    # Уведомление агенту. Сбой отправки заявку не отменяет: она уже закрыта,
+    # и оператор не должен нажимать «Готово» второй раз из-за Telegram
+    await _notify_agent_done(row)
+
+    return {"success": True, "message": "Заявка перенесена в архив", "id": row["id"]}
+
+
+async def _notify_agent_done(row) -> None:
+    """Текстовое сообщение агенту о том, что его заявку провели."""
+    tg_id = row["tg_id"]
+    if not tg_id:
+        # Заявка пришла с сайта и агент ни разу не входил в бота —
+        # берём адрес из его учётной записи
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                tg_id = await conn.fetchval(
+                    "SELECT tg_id FROM users WHERE upper(login) = $1",
+                    (row["agent"] or "").upper(),
+                )
+        except Exception:
+            logger.exception("Не удалось найти Telegram агента %s", row["agent"])
+            return
+
+    if not tg_id:
+        logger.info("У агента %s нет Telegram — уведомление не отправлено", row["agent"])
+        return
+
+    what = "Добавление новой ТТ" if row["kind"] == "add" else "Прикрепление точки"
+    text = (
+        "✅ ВАША ЗАЯВКА ВЫПОЛНЕНА\n\n"
+        f"📋 {what}\n"
+        f"🏪 {row['point_name'] or '—'}\n"
+        + (f"🔢 Код: {row['point_code']}\n" if row["point_code"] else "")
+        + (f"📅 Дни визита: {row['visit_day']}\n" if row["visit_day"] else "")
+        + "\nОператор провёл заявку в системе. В приложении она стала зелёной."
+    )
+
+    await notify.notify_user(tg_id, text)
+
+
+async def archive_requests(day: str = "", search: str = "", limit: int = 300) -> dict:
+    """
+    Архив: обработанные заявки за один день.
+
+    day — 'ГГГГ-ММ-ДД' по ташкентскому времени. Без него берётся сегодня:
+    архив открывают в первую очередь, чтобы посмотреть текущую смену.
+
+    Сравнение идёт через AT TIME ZONE: done_at хранится в UTC, и без
+    перевода заявки, закрытые вечером, попадали бы в следующий день.
+    """
+    day = (day or "").strip()
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if not day:
+                day = str(await conn.fetchval(
+                    "SELECT (now() AT TIME ZONE $1)::date", TIMEZONE))
+
+            # Двойное приведение $2::text::date обязательно. При простом
+            # $2::date драйвер решает, что аргумент — объект даты Python,
+            # и отказывается принимать строку '2026-09-18' из запроса.
+
+            like = f"%{(search or '').strip().upper()}%" if (search or "").strip() else ""
+
+            rows = await conn.fetch(
+                f"""
+                SELECT {REQUEST_COLUMNS}
+                  FROM operator_requests
+                 WHERE status = 'done'
+                   AND (done_at AT TIME ZONE $1)::date = $2::text::date
+                   AND ($3 = ''
+                        OR upper(agent) LIKE $3
+                        OR upper(COALESCE(point_name, '')) LIKE $3
+                        OR COALESCE(point_code, '') LIKE $3
+                        OR COALESCE(inn, '') LIKE $3)
+                 ORDER BY done_at DESC
+                 LIMIT $4
+                """,
+                TIMEZONE, day, like, limit,
+            )
+
+            # Дни, в которые вообще что-то делали: календарь помечает их
+            # точкой, чтобы не тыкать в пустые даты наугад
+            busy = await conn.fetch(
+                f"""
+                SELECT (done_at AT TIME ZONE $1)::date AS d, count(*) AS n
+                  FROM operator_requests
+                 WHERE status = 'done'
+                   AND done_at > now() - interval '120 days'
+                 GROUP BY 1
+                 ORDER BY 1 DESC
+                """,
+                TIMEZONE,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    return {
+        "success": True,
+        "day": day,
+        "requests": [_request_row(r) for r in rows],
+        "busyDays": {str(b["d"]): b["n"] for b in busy},
+    }
+
+
+async def my_requests(agent: str, limit: int = 60) -> dict:
+    """
+    «Мои заявки» в приложении агента: что отправлено и что уже проведено.
+
+    Выполненные не скрываются — агент должен увидеть, что заявка позеленела.
+    """
+    agent = (agent or "").strip().upper()
+    if not agent:
+        return {"success": False, "message": "Не указан агент"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT {REQUEST_COLUMNS}
+                  FROM operator_requests
+                 WHERE upper(agent) = $1
+                 ORDER BY (status = 'pending') DESC, created_at DESC
+                 LIMIT $2
+                """,
+                agent, limit,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    requests = [_request_row(r) for r in rows]
+    return {
+        "success": True,
+        "requests": requests,
+        "pendingCount": sum(1 for r in requests if r["status"] == "pending"),
+    }
+
+
+# Порядковый номер дня недели у Postgres (isodow): 1 = понедельник.
+# Совпадает с порядком в WORK_DAYS, поэтому индекс берётся вычитанием.
+async def today_name() -> str:
+    """Название сегодняшнего дня по-русски, по ташкентскому времени."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            dow = await conn.fetchval(
+                "SELECT extract(isodow FROM (now() AT TIME ZONE $1))::int", TIMEZONE)
+    except Exception:
+        logger.exception("Не удалось определить текущий день")
+        return ""
+
+    idx = int(dow) - 1
+    return WORK_DAYS[idx] if 0 <= idx < len(WORK_DAYS) else ""
+
+
+async def day_points(agent: str, day: str = "") -> dict:
+    """
+    Точки агента на один день визита — третья вкладка приложения.
+
+    day пустой  → сегодняшний день (в выходной список будет пуст, и это
+                  честно: визитов в этот день нет).
+    day = 'all' → все точки агента.
+    """
+    agent = (agent or "").strip().upper()
+    if not agent:
+        return {"success": False, "message": "Не указан агент"}
+
+    today = await today_name()
+    day = (day or "").strip()
+    if not day:
+        day = today or "all"
+
+    all_days = day == "all"
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT t.point_code,
+                       COALESCE(c.point_name, max(t.point_name))   AS point_name,
+                       c.inn,
+                       COALESCE(c.status, 0)                       AS status,
+                       string_agg(DISTINCT t.visit_day, ', ')      AS days
+                  FROM attachments t
+             LEFT JOIN client_base c ON c.point_code = t.point_code
+                 WHERE upper(t.agent) = $1
+                   AND ($2 OR t.visit_day = $3)
+                 GROUP BY t.point_code, c.point_name, c.inn, c.status
+                 ORDER BY point_name
+                """,
+                agent, all_days, day,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    load = await agent_load(agent)
+
+    return {
+        "success": True,
+        "agent": agent,
+        "day": day,
+        "today": today,
+        "workDays": list(WORK_DAYS),
+        "points": [
+            {
+                "pointCode": r["point_code"],
+                "pointName": r["point_name"] or "—",
+                "inn": r["inn"] or "",
+                "status": r["status"],
+                "days": r["days"] or "",
+            }
+            for r in rows
+        ],
+        "pointCount": load.get("pointCount", 0),
+        "dayLoad": load.get("dayLoad", {}),
+        "maxPoints": MAX_POINTS_PER_AGENT,
+        "maxVisitsPerDay": MAX_VISITS_PER_DAY,
+    }
+
+
+# ---------- Обёртки для панели: всё по пропуску ----------
+
+async def panel_requests(token: str, search: str = "") -> dict:
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if not (auth["isOperator"] or auth["isAdmin"]):
+        return {"success": False, "message": "Недостаточно прав"}
+    result = await pending_requests(search)
+    if result.get("success"):
+        result["login"] = auth["login"]
+    return result
+
+
+async def panel_request_done(token: str, request_id: int) -> dict:
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if not (auth["isOperator"] or auth["isAdmin"]):
+        return {"success": False, "message": "Недостаточно прав"}
+    return await mark_request_done(request_id, auth["login"])
+
+
+async def panel_archive(token: str, day: str = "", search: str = "") -> dict:
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if not (auth["isOperator"] or auth["isAdmin"]):
+        return {"success": False, "message": "Недостаточно прав"}
+    return await archive_requests(day, search)

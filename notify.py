@@ -24,9 +24,16 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 SEND_TIMEOUT = 10
 
 
-async def notify_admin(text: str):
-    """Отправляет админу сообщение. Молча пропускает, если ADMIN_ID не задан."""
-    if not ADMIN_ID:
+async def notify_user(chat_id, text: str):
+    """
+    Отправляет сообщение конкретному человеку по его Telegram-адресу.
+
+    Используется для уведомлений агенту о выполненной заявке. Адрес берётся
+    из users.tg_id, который заполняется при входе агента в бота — без этого
+    написать первым нельзя: у Telegram нет способа начать переписку
+    с человеком, который сам ничего не писал.
+    """
+    if not chat_id:
         return
 
     try:
@@ -34,13 +41,21 @@ async def notify_admin(text: str):
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 TELEGRAM_API,
-                json={"chat_id": ADMIN_ID, "text": text},
+                json={"chat_id": chat_id, "text": text},
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.warning("Telegram отклонил уведомление (%s): %s", resp.status, body[:200])
+                    logger.warning("Telegram отклонил уведомление для %s (%s): %s",
+                                   chat_id, resp.status, body[:200])
     except Exception:
-        logger.exception("Не удалось отправить уведомление админу")
+        logger.exception("Не удалось отправить уведомление в чат %s", chat_id)
+
+
+async def notify_admin(text: str):
+    """Отправляет админу сообщение. Молча пропускает, если ADMIN_ID не задан."""
+    if not ADMIN_ID:
+        return
+    await notify_user(ADMIN_ID, text)
 
 
 def build_attach_text(payload: dict) -> str:

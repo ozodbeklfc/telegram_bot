@@ -175,6 +175,143 @@
   .day-pick input { margin: 0; }
   .day-pick.keep { border-color: #C8EFE8; background: #F2FBF9; }
 
+  /* ---------- правила нагрузки ---------- */
+  /* Правила висят над поиском, у самих точек агента: именно здесь
+     супервайзер решает, что откреплять, и цифра «сейчас 221 из 150»
+     должна быть перед глазами, а не в инструкции */
+  .rules {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 14px;
+  }
+  .rules-head {
+    font-size: 11px; font-weight: 700; letter-spacing: .6px;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 10px;
+  }
+  .rule { margin-bottom: 11px; }
+  .rule:last-child { margin-bottom: 0; }
+  .rule-top {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 10px; font-size: 13px;
+  }
+  .rule-name { color: var(--text); }
+  .rule-name b { font-weight: 700; }
+  .rule-fact { font-weight: 700; font-size: 13px; color: var(--mint); white-space: nowrap; }
+  .rule-fact.over { color: var(--red); }
+  .bar {
+    height: 5px; border-radius: 3px; background: #EEF1F6;
+    margin-top: 6px; overflow: hidden;
+  }
+  .bar i { display: block; height: 100%; background: var(--mint); border-radius: 3px; }
+  .bar i.over { background: var(--red); }
+
+  .day-load { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
+  .day-load span {
+    font-size: 11.5px; font-weight: 600; padding: 3px 7px; border-radius: 6px;
+    background: #EEF1F6; color: #5A6478;
+  }
+  .day-load span.full { background: #E6F7F4; color: #0A7A6B; }
+  .day-load span.over { background: #FBEAE8; color: var(--red); }
+
+  /* ---------- вкладки (оператор и админ) ---------- */
+  .nav { display: flex; gap: 6px; margin-bottom: 14px; }
+  .nav button {
+    flex: 1; padding: 9px 10px; border: 1px solid var(--line); background: #fff;
+    border-radius: 9px; font-size: 13px; font-weight: 600; color: var(--muted);
+    cursor: pointer; font-family: inherit; white-space: nowrap;
+  }
+  .nav button.on { background: var(--navy); border-color: var(--navy); color: #fff; }
+  .nav .count {
+    display: inline-block; min-width: 18px; margin-left: 5px; padding: 0 5px;
+    border-radius: 9px; background: #FBEAE8; color: var(--red);
+    font-size: 11px; font-weight: 700;
+  }
+  .nav button.on .count { background: rgba(255,255,255,.22); color: #fff; }
+
+  /* ---------- заявка в листе оператора ---------- */
+  .req {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 14px; margin-bottom: 10px;
+  }
+  .req.done { background: #F4FCFA; border-color: #C8EFE8; }
+  .req-top { display: flex; align-items: flex-start; gap: 12px; }
+  .req-kind {
+    font-size: 11px; font-weight: 700; letter-spacing: .3px;
+    padding: 3px 8px; border-radius: 20px; white-space: nowrap;
+    background: var(--ice); color: var(--navy);
+  }
+  .req-kind.add { background: #FFF2D9; color: #8A5A00; }
+  .req-when { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .btn-done {
+    background: var(--mint); color: #fff; border: none; border-radius: 9px;
+    padding: 10px 14px; font-size: 13px; font-weight: 700; cursor: pointer;
+    font-family: inherit; white-space: nowrap; flex-shrink: 0;
+  }
+  .btn-done:hover { background: #008C7E; }
+  .btn-done:disabled { opacity: .55; cursor: default; }
+  .done-mark { color: #0A7A6B; font-weight: 700; font-size: 13px; white-space: nowrap; }
+
+  /* Подробности заявки раскрываются по клику: в листе из 200 строк
+     развёрнутые адреса и телефоны читать невозможно */
+  .req details { margin-top: 9px; }
+  .req summary {
+    cursor: pointer; font-size: 12.5px; color: var(--navy); font-weight: 600;
+    list-style: none;
+  }
+  .req summary::-webkit-details-marker { display: none; }
+  .req summary::before { content: "▸ "; }
+  .req details[open] summary::before { content: "▾ "; }
+  .req-fields {
+    margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px;
+    font-size: 13px;
+  }
+  .req-fields div { display: flex; gap: 8px; padding: 2px 0; }
+  .req-fields b { flex: 0 0 130px; color: var(--muted); font-weight: 600; }
+  .req-fields span { min-width: 0; word-break: break-word; }
+
+  /* ---------- календарь архива ---------- */
+  .cal {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px; margin-bottom: 14px;
+  }
+  .cal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .cal-month { font-weight: 700; font-size: 14.5px; }
+  .cal-nav {
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    width: 32px; height: 32px; cursor: pointer; color: var(--navy);
+    font-size: 15px; font-family: inherit;
+  }
+  .cal-nav:hover { background: #F2F5FA; }
+  /* minmax(0, 1fr) обязателен: при обычном 1fr колонка не может стать уже
+     своего содержимого, и сетка из семи клеток с aspect-ratio вылезала
+     за белую карточку — суббота с воскресеньем оказывались снаружи */
+  .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .cal-dow {
+    text-align: center; font-size: 11px; color: var(--muted);
+    font-weight: 600; padding-bottom: 4px;
+  }
+  .cal-day {
+    position: relative; aspect-ratio: 1; border: 1px solid transparent;
+    border-radius: 8px; background: #F7F9FC; cursor: pointer;
+    font-size: 13px; font-family: inherit; color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .cal-day:hover { border-color: var(--navy); }
+  .cal-day.empty { background: none; cursor: default; }
+  .cal-day.empty:hover { border-color: transparent; }
+  /* Точка под числом — в этот день что-то делали. Без неё в архив
+     приходится тыкать наугад */
+  .cal-day.busy::after {
+    content: ""; position: absolute; bottom: 4px; left: 50%;
+    transform: translateX(-50%);
+    width: 4px; height: 4px; border-radius: 50%; background: var(--mint);
+  }
+  .cal-day.today { font-weight: 700; color: var(--navy); }
+  .cal-day.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+  .cal-day.on::after { background: #fff; }
+
   /* ---------- итоги ---------- */
   .summary {
     background: var(--navy); color: #fff; border-radius: 12px;
@@ -230,7 +367,8 @@
 
   /* Переходы: экран проявляется, карточки отзываются на нажатие,
      окно приезжает снизу — на телефоне это главный признак отклика */
-  #screen-login, #screen-brands, #screen-agents, #screen-points {
+  #screen-login, #screen-brands, #screen-agents, #screen-points,
+  #screen-requests, #screen-archive {
     animation: screen-in .22s ease-out;
   }
   @keyframes screen-in {
@@ -371,6 +509,27 @@
       </div>
       </div>
 
+      <!-- Правила нагрузки: цифры агента против установленных лимитов -->
+      <div class="rules" id="point-rules">
+        <div class="rules-head">Правила нагрузки</div>
+
+        <div class="rule">
+          <div class="rule-top">
+            <span class="rule-name">Не больше <b>150</b> торговых точек на агента</span>
+            <span class="rule-fact" id="rule-points-fact">—</span>
+          </div>
+          <div class="bar"><i id="rule-points-bar" style="width:0"></i></div>
+        </div>
+
+        <div class="rule">
+          <div class="rule-top">
+            <span class="rule-name">Не больше <b>30</b> визитов в один день</span>
+            <span class="rule-fact" id="rule-days-fact">—</span>
+          </div>
+          <div class="day-load" id="rule-day-load"></div>
+        </div>
+      </div>
+
       <div class="search">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
@@ -380,6 +539,69 @@
     </div>
 
     <div id="points-list"></div>
+  </div>
+</div>
+
+<!-- ================= ЛИСТ ЗАЯВОК (ОПЕРАТОР) ================= -->
+<div id="screen-requests" class="hidden">
+  <div class="wrap">
+    <div class="sticky" id="req-sticky">
+      <div class="top">
+        <div>
+          <div class="top-title">Заявки</div>
+          <div class="top-sub" id="req-sub">—</div>
+        </div>
+        <div class="head-actions">
+          <button class="logout" id="pwd-btn-req">Сменить пароль</button>
+          <button class="logout" id="logout-req">Выйти</button>
+        </div>
+      </div>
+
+      <div class="who-row">
+        <span class="login-chip" id="who-req">—</span>
+      </div>
+
+      <div class="nav" data-nav></div>
+
+      <div class="search">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
+        </svg>
+        <input type="text" id="req-search" placeholder="Поиск по агенту, точке или ИНН" autocomplete="off">
+      </div>
+    </div>
+
+    <div id="req-list"></div>
+  </div>
+</div>
+
+<!-- ================= АРХИВ ================= -->
+<div id="screen-archive" class="hidden">
+  <div class="wrap">
+    <div class="sticky" id="arc-sticky">
+      <div class="top">
+        <div>
+          <div class="top-title">Архив</div>
+          <div class="top-sub" id="arc-sub">Выберите день</div>
+        </div>
+        <div class="head-actions">
+          <button class="logout" id="logout-arc">Выйти</button>
+        </div>
+      </div>
+
+      <div class="nav" data-nav></div>
+    </div>
+
+    <div class="cal">
+      <div class="cal-head">
+        <button class="cal-nav" id="cal-prev" title="Предыдущий месяц">‹</button>
+        <div class="cal-month" id="cal-month">—</div>
+        <button class="cal-nav" id="cal-next" title="Следующий месяц">›</button>
+      </div>
+      <div class="cal-grid" id="cal-grid"></div>
+    </div>
+
+    <div id="arc-list"></div>
   </div>
 </div>
 
@@ -442,7 +664,8 @@ function dayStrip(daysText) {
 // приложения агента и обновление страницы, но исчезает при закрытии вкладки.
 // Пароль здесь не хранится вообще.
 const TOKEN_KEY = "panel_token";
-let auth = { token: "", login: "", brand: "", supervisor: "", isAdmin: false };
+let auth = { token: "", login: "", brand: "", supervisor: "",
+             isAdmin: false, isOperator: false };
 
 function saveToken(t) {
   auth.token = t || "";
@@ -472,8 +695,11 @@ async function call(action, extra) {
   return data;
 }
 
+const SCREENS = ["screen-login", "screen-brands", "screen-agents", "screen-points",
+                 "screen-requests", "screen-archive"];
+
 function show(id) {
-  ["screen-login", "screen-brands", "screen-agents", "screen-points"].forEach(s => {
+  SCREENS.forEach(s => {
     document.getElementById(s).classList.toggle("hidden", s !== id);
   });
   window.scrollTo(0, 0);
@@ -579,15 +805,30 @@ async function doLogin() {
 // пропуску из приложения агента
 function enterPanel(r) {
   auth.isAdmin = !!r.isAdmin;
+  auth.isOperator = !!r.isOperator;
   const who = (auth.login || r.login || "").toUpperCase();
   auth.login = who;
 
   // Логин виден постоянно: супервайзеров много, важно понимать, под кем сидишь
   document.getElementById("who-agents").textContent = who;
   document.getElementById("who-brands").textContent = who;
+  document.getElementById("who-req").textContent = who;
+
+  // Оператору показывать нечего, кроме заявок и архива: агентов и точек
+  // он не правит
+  if (r.isOperator) {
+    renderRequests(r.requests || []);
+    renderNav("requests");
+    show("screen-requests");
+    return;
+  }
 
   if (r.isAdmin) {
+    // Админу вкладки добавляются к экрану супервайзеров: в разметке их нет,
+    // потому что супервайзеру они не нужны
+    insertNavInto("sv-sticky");
     renderSupervisors(r.supervisors || []);
+    renderNav("supervisors");
     show("screen-brands");
   } else {
     auth.supervisor = who;
@@ -718,12 +959,16 @@ document.getElementById("back-brands").addEventListener("click", () => show("scr
 document.getElementById("logout-brands").addEventListener("click", doLogout);
 
 document.getElementById("logout-btn").addEventListener("click", doLogout);
+document.getElementById("logout-req").addEventListener("click", doLogout);
+document.getElementById("logout-arc").addEventListener("click", doLogout);
+document.getElementById("pwd-btn-req").addEventListener("click", openPassword);
 
 function doLogout() {
   const lastLogin = auth.login;
   call("panel_logout", {}).catch(() => {});
   saveToken("");
-  auth = { token: "", login: "", brand: "", supervisor: "", isAdmin: false };
+  auth = { token: "", login: "", brand: "", supervisor: "",
+           isAdmin: false, isOperator: false };
   // Логин оставляем в поле: обычно заходит один и тот же человек
   document.getElementById("login").value = lastLogin;
   document.getElementById("password").value = "";
@@ -796,7 +1041,336 @@ async function openAgent(agent) {
   }
 
   document.getElementById("point-count").textContent = r.points.length;
+  renderRules(r);
   renderPoints(r.points);
+}
+
+// ---------------- ПРАВИЛА НАГРУЗКИ ----------------
+// Цифры берутся по всей базе агента, а не по показанному списку: при поиске
+// в списке остаются две точки, а лимит всё равно про все.
+function renderRules(r) {
+  const maxPoints = r.maxPoints || 150;
+  const maxDay = r.maxVisitsPerDay || 30;
+  const count = r.pointCount || 0;
+
+  const fact = document.getElementById("rule-points-fact");
+  const over = count > maxPoints;
+  fact.textContent = over
+    ? `${count} — сверх лимита на ${count - maxPoints}`
+    : `${count} из ${maxPoints}`;
+  fact.className = "rule-fact" + (over ? " over" : "");
+
+  const bar = document.getElementById("rule-points-bar");
+  bar.style.width = Math.min(100, Math.round(count / maxPoints * 100)) + "%";
+  bar.className = over ? "over" : "";
+
+  const load = r.dayLoad || {};
+  const days = r.workDays || DAYS.map(d => d[1]);
+  const overDays = days.filter(d => (load[d] || 0) > maxDay);
+
+  const daysFact = document.getElementById("rule-days-fact");
+  daysFact.textContent = overDays.length
+    ? `перегружено ${overDays.length} ${plural(overDays.length, "день", "дня", "дней")}`
+    : "в норме";
+  daysFact.className = "rule-fact" + (overDays.length ? " over" : "");
+
+  document.getElementById("rule-day-load").innerHTML = days.map(full => {
+    const n = load[full] || 0;
+    const short = (DAYS.find(d => d[1] === full) || [full.slice(0, 2)])[0];
+    const cls = n > maxDay ? "over" : (n === maxDay ? "full" : "");
+    return `<span class="${cls}">${short} ${n}</span>`;
+  }).join("");
+}
+
+// ---------------- ВКЛАДКИ ОПЕРАТОРА И АДМИНА ----------------
+// Сколько заявок ждёт — цифра на вкладке «Заявки»
+let pendingCount = 0;
+
+// Супервайзеру вкладки не нужны: у него один экран — его агенты
+function renderNav(active) {
+  const tabs = [];
+  if (auth.isAdmin) tabs.push(["supervisors", "Супервайзеры"]);
+  tabs.push(["requests", "Заявки"]);
+  tabs.push(["archive", "Архив"]);
+
+  const html = tabs.map(([key, label]) => `
+    <button data-tab="${key}" class="${key === active ? "on" : ""}">${label}${
+      key === "requests" && pendingCount
+        ? `<span class="count">${pendingCount}</span>` : ""
+    }</button>`).join("");
+
+  document.querySelectorAll("[data-nav]").forEach(box => {
+    box.innerHTML = html;
+    box.querySelectorAll("[data-tab]").forEach(b => {
+      b.addEventListener("click", () => openTab(b.dataset.tab));
+    });
+  });
+}
+
+function openTab(tab) {
+  if (tab === "supervisors") {
+    renderNav("supervisors");
+    show("screen-brands");
+  } else if (tab === "requests") {
+    openRequests();
+  } else {
+    openArchive(archiveDay);
+  }
+}
+
+// У экрана супервайзеров вкладок в разметке нет: они нужны только админу,
+// и добавляются на месте, когда он вошёл
+function insertNavInto(stickyId) {
+  const sticky = document.getElementById(stickyId);
+  if (!sticky || sticky.querySelector("[data-nav]")) return;
+  const box = document.createElement("div");
+  box.setAttribute("data-nav", "");
+  box.className = "nav";
+  sticky.insertBefore(box, sticky.querySelector(".search"));
+}
+
+// ---------------- ЛИСТ ЗАЯВОК ----------------
+async function openRequests(search) {
+  const term = search === undefined ? document.getElementById("req-search").value : search;
+  renderNav("requests");
+  show("screen-requests");
+  document.getElementById("req-list").innerHTML = '<div class="loading">Загружаю заявки...</div>';
+
+  const r = await call("panel_requests", { search: term }).catch(() => null);
+  if (!r || !r.success) {
+    document.getElementById("req-list").innerHTML =
+      `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+  renderRequests(r.requests || []);
+}
+
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("ru-RU",
+    { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function requestFields(req) {
+  const rows = Object.entries(req.details || {});
+  if (!rows.length) return "";
+  return `
+    <details>
+      <summary>Все данные заявки</summary>
+      <div class="req-fields">
+        ${rows.map(([k, v]) => `<div><b>${esc(FIELD_NAMES[k] || k)}</b><span>${esc(v)}</span></div>`).join("")}
+      </div>
+    </details>`;
+}
+
+// Ключи заявки приходят такими, какими их отправляет форма. Здесь
+// человеческие подписи; неизвестный ключ покажется как есть.
+const FIELD_NAMES = {
+  clientName: "Клиент", geo: "Геометка", address: "Адрес", phone: "Телефон",
+  inn: "ИНН", region: "Регион", oblast: "Область", okrug: "Округ",
+  rayon: "Район", format: "Формат", channel: "Канал", type: "Тип",
+  category: "Категория", deliveryCode: "Код доставщика", comments: "Комментарий",
+  pointCode: "Код точки", pointName: "Название точки",
+};
+
+function requestCard(req, done) {
+  return `
+  <div class="req ${done ? "done" : ""}" data-req="${req.id}">
+    <div class="req-top">
+      <div class="grow">
+        <div>
+          <span class="req-kind ${req.kind}">${esc(req.kindLabel)}</span>
+        </div>
+        <div class="name" style="margin-top:7px;">${esc(req.pointName)}</div>
+        <div class="meta">
+          ${esc(req.agent)}${req.pointCode ? " · " + esc(req.pointCode) : ""}${req.inn ? " · ИНН " + esc(req.inn) : ""}
+        </div>
+        ${req.visitDay ? `<div class="meta">📅 ${esc(req.visitDay)}</div>` : ""}
+        <div class="req-when">
+          ${done
+            ? `Готово ${when(req.doneAt)}${req.doneBy ? " · " + esc(req.doneBy) : ""}`
+            : `Поступила ${when(req.createdAt)}${req.source ? " · " + (req.source === "bot" ? "бот" : "сайт") : ""}`}
+        </div>
+        ${requestFields(req)}
+      </div>
+      ${done
+        ? '<div class="done-mark">✓ готово</div>'
+        : `<button class="btn-done" data-done="${req.id}">✓ Готово</button>`}
+    </div>
+  </div>`;
+}
+
+function renderRequests(list) {
+  pendingCount = list.length;
+  renderNav("requests");
+
+  document.getElementById("req-sub").textContent = list.length
+    ? `${list.length} ${plural(list.length, "заявка ждёт", "заявки ждут", "заявок ждут")} обработки`
+    : "Всё обработано";
+
+  const box = document.getElementById("req-list");
+  if (!list.length) {
+    const q = document.getElementById("req-search").value.trim();
+    box.innerHTML = q
+      ? `<div class="empty">По запросу «${esc(q)}» ничего не найдено.</div>`
+      : '<div class="empty">Новых заявок нет.<br>Всё обработано.</div>';
+    return;
+  }
+
+  box.innerHTML = list.map(req => requestCard(req, false)).join("");
+
+  box.querySelectorAll("[data-done]").forEach(btn => {
+    btn.addEventListener("click", () => markDone(btn));
+  });
+}
+
+async function markDone(btn) {
+  const id = Number(btn.dataset.done);
+  btn.disabled = true;
+  btn.textContent = "...";
+
+  const r = await call("panel_request_done", { id: id }).catch(() => null);
+
+  if (!r || !r.success) {
+    btn.disabled = false;
+    btn.textContent = "✓ Готово";
+    alert(r ? r.message : "Сервер не отвечает. Попробуйте ещё раз.");
+    if (r && !r.success) openRequests();
+    return;
+  }
+
+  // Карточка зеленеет на месте и уезжает из листа: так видно, что нажатие
+  // сработало, и лист не прыгает под рукой
+  const card = document.querySelector(`.req[data-req="${id}"]`);
+  if (card) {
+    card.classList.add("done");
+    card.querySelector(".btn-done").outerHTML = '<div class="done-mark">✓ готово</div>';
+    setTimeout(() => {
+      card.remove();
+      pendingCount = Math.max(0, pendingCount - 1);
+      renderNav("requests");
+      const left = document.querySelectorAll("#req-list .req").length;
+      document.getElementById("req-sub").textContent = left
+        ? `${left} ${plural(left, "заявка ждёт", "заявки ждут", "заявок ждут")} обработки`
+        : "Всё обработано";
+      if (!left) openRequests();
+    }, 900);
+  }
+}
+
+let reqTimer = null;
+document.getElementById("req-search").addEventListener("input", function () {
+  clearTimeout(reqTimer);
+  const value = this.value;
+  reqTimer = setTimeout(() => openRequests(value), 250);
+});
+
+// ---------------- АРХИВ И КАЛЕНДАРЬ ----------------
+let archiveDay = "";      // 'ГГГГ-ММ-ДД'
+let calMonth = null;      // Date на первое число показанного месяца
+let busyDays = {};
+
+// Два списка, потому что по-русски название месяца меняется: заголовок —
+// «сентябрь 2026», а дата — «18 сентября 2026»
+const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+                "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+const MONTHS_OF = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+                   "августа", "сентября", "октября", "ноября", "декабря"];
+
+async function openArchive(day) {
+  renderNav("archive");
+  show("screen-archive");
+  document.getElementById("arc-list").innerHTML = '<div class="loading">Загружаю архив...</div>';
+
+  const r = await call("panel_archive", { day: day || "" }).catch(() => null);
+  if (!r || !r.success) {
+    document.getElementById("arc-list").innerHTML =
+      `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+
+  archiveDay = r.day;
+  busyDays = r.busyDays || {};
+  if (!calMonth) calMonth = firstOfMonth(archiveDay);
+
+  renderCalendar();
+  renderArchive(r.requests || []);
+}
+
+function firstOfMonth(dayStr) {
+  const [y, m] = dayStr.split("-").map(Number);
+  return new Date(y, m - 1, 1);
+}
+
+// Дату собираем из частей, а не через toISOString: тот переводит в UTC,
+// и вечером 18-го числа вернул бы 17-е.
+function isoDay(y, m, d) {
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+function renderCalendar() {
+  const year = calMonth.getFullYear();
+  const month = calMonth.getMonth();
+  document.getElementById("cal-month").textContent = `${MONTHS[month]} ${year}`;
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  // В России неделя начинается с понедельника, а getDay() считает с воскресенья
+  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7;
+
+  const now = new Date();
+  const todayIso = isoDay(now.getFullYear(), now.getMonth(), now.getDate());
+
+  let html = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    .map(d => `<div class="cal-dow">${d}</div>`).join("");
+
+  for (let i = 0; i < firstDow; i++) html += '<div class="cal-day empty"></div>';
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const iso = isoDay(year, month, d);
+    const cls = ["cal-day"];
+    if (busyDays[iso]) cls.push("busy");
+    if (iso === todayIso) cls.push("today");
+    if (iso === archiveDay) cls.push("on");
+    const title = busyDays[iso]
+      ? `${busyDays[iso]} ${plural(busyDays[iso], "заявка", "заявки", "заявок")}` : "";
+    html += `<button class="${cls.join(" ")}" data-day="${iso}" title="${title}">${d}</button>`;
+  }
+
+  const grid = document.getElementById("cal-grid");
+  grid.innerHTML = html;
+  grid.querySelectorAll("[data-day]").forEach(b => {
+    b.addEventListener("click", () => openArchive(b.dataset.day));
+  });
+}
+
+document.getElementById("cal-prev").addEventListener("click", () => {
+  calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() - 1, 1);
+  renderCalendar();
+});
+document.getElementById("cal-next").addEventListener("click", () => {
+  calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 1);
+  renderCalendar();
+});
+
+function renderArchive(list) {
+  const [y, m, d] = archiveDay.split("-").map(Number);
+  const label = `${d} ${MONTHS_OF[m - 1]} ${y}`;
+
+  document.getElementById("arc-sub").textContent = list.length
+    ? `${label} · ${list.length} ${plural(list.length, "заявка", "заявки", "заявок")}`
+    : `${label} · действий не было`;
+
+  const box = document.getElementById("arc-list");
+  box.innerHTML = list.length
+    ? list.map(req => requestCard(req, true)).join("")
+    : '<div class="empty">В этот день заявок не обрабатывали.<br>Выберите другой день в календаре.</div>';
 }
 
 function renderPoints(points) {

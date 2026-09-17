@@ -7,6 +7,10 @@
     <!-- Карта для выбора геометки (бесплатная, без ключей и регистрации) -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <!-- Telegram Mini App: отсюда берётся id агента, чтобы бот мог прислать
+         ему уведомление о выполненной заявке. В обычном браузере скрипт
+         просто ничего не даёт, и id берётся из входа в бота. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         /* Единая палитра: те же цвета, что в панели бренда (admin.html) */
         :root {
@@ -195,6 +199,114 @@
         .status-message.success { color: #0A7A6B; background-color: #E6F7F4; border: none; }
         
         .loader { display: none; text-align: center; margin-top: 10px; font-size: 13px; color: var(--navy); font-weight: 600; }
+
+        /* ================= НИЖНЯЯ НАВИГАЦИЯ ================= */
+        /* Три вкладки агента. Показывается только на самих вкладках:
+           внутри формы прикрепления или добавления она бы уводила
+           с середины заполнения и теряла введённое. */
+        .tabbar {
+            display: none;
+            position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
+            background: rgba(255, 255, 255, .96);
+            -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+            border-top: 1px solid var(--line);
+            /* Запас под жестовую полосу на iPhone */
+            padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+        }
+        .tabbar.show { display: flex; }
+        .tabbar button {
+            flex: 1; background: none; border: none; cursor: pointer;
+            font-family: inherit; color: var(--muted);
+            display: flex; flex-direction: column; align-items: center; gap: 3px;
+            padding: 7px 4px 5px; border-radius: 10px; position: relative;
+            font-size: 11px; font-weight: 600; letter-spacing: -.1px;
+            transition: color .15s ease, background-color .15s ease;
+        }
+        .tabbar button.on { color: var(--navy); background: #EEF3FF; }
+        .tabbar button svg { width: 22px; height: 22px; }
+        .tabbar .dot {
+            position: absolute; top: 4px; right: 50%; margin-right: -18px;
+            min-width: 17px; height: 17px; padding: 0 5px;
+            border-radius: 9px; background: var(--red); color: #fff;
+            font-size: 10.5px; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+        }
+        /* Контент не должен уезжать под панель */
+        body.has-tabs { padding-bottom: 82px; }
+
+        /* ================= ШАПКА ВКЛАДКИ ================= */
+        .tab-head {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 10px; margin: 0 0 14px;
+        }
+        .tab-head h2 { margin: 0; text-align: left; font-size: 20px; }
+        .tab-head .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+        /* Фильтр рабочих дней — в верхнем углу, как просили */
+        .day-filter {
+            width: auto; min-width: 128px; padding: 9px 32px 9px 11px;
+            font-size: 14px; font-weight: 600; color: var(--navy);
+            background-position: right 10px center; flex-shrink: 0;
+        }
+        .btn-refresh {
+            background: #fff; border: 1px solid var(--line); border-radius: 9px;
+            color: var(--navy); cursor: pointer; font-family: inherit;
+            font-size: 13px; font-weight: 600; padding: 9px 12px; flex-shrink: 0;
+        }
+        .btn-refresh:active { transform: scale(.97); }
+
+        /* ================= КАРТОЧКИ ================= */
+        .item {
+            background: #fff; border: 1px solid var(--line); border-left: 3px solid var(--line);
+            border-radius: 11px; padding: 12px 13px; margin-bottom: 9px;
+        }
+        .item-name { font-weight: 600; font-size: 14.5px; line-height: 1.3; }
+        .item-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; word-break: break-word; }
+        .item-row {
+            display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+        }
+
+        /* Заявка ждёт — янтарная, выполнена — зелёная. Именно этот переход
+           агент и должен увидеть после «Готово» у оператора. */
+        .item.pending { border-left-color: #E9A23B; }
+        .item.done    { border-left-color: var(--mint); background: #F4FCFA; }
+
+        .state {
+            font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px;
+            white-space: nowrap; flex-shrink: 0;
+        }
+        .state.pending { background: #FFF2D9; color: #8A5A00; }
+        .state.done    { background: #E6F7F4; color: #0A7A6B; }
+
+        .kind {
+            display: inline-block; font-size: 10.5px; font-weight: 700;
+            letter-spacing: .3px; padding: 2px 7px; border-radius: 5px;
+            background: var(--ice); color: var(--navy); margin-bottom: 6px;
+        }
+        .kind.add { background: #FFF2D9; color: #8A5A00; }
+
+        .pill {
+            display: inline-block; font-size: 11.5px; font-weight: 600;
+            padding: 3px 8px; border-radius: 6px; background: #EEF1F6;
+            color: #5A6478; margin: 5px 5px 0 0;
+        }
+        .pill.today { background: var(--navy); color: #fff; }
+        .pill.passive { background: #FBEAE8; color: var(--red); }
+
+        /* Счётчик нагрузки на вкладке точек: правила должны быть видны
+           не только супервайзеру, но и самому агенту */
+        .load-note {
+            background: #fff; border: 1px solid var(--line); border-radius: 11px;
+            padding: 11px 13px; margin-bottom: 14px; font-size: 12.5px;
+            color: var(--muted); line-height: 1.5;
+        }
+        .load-note b { color: var(--text); }
+        .load-note .over { color: var(--red); font-weight: 700; }
+
+        .empty-box {
+            text-align: center; color: var(--muted); font-size: 13.5px;
+            padding: 36px 16px; line-height: 1.5;
+        }
+        .item { animation: screen-in .18s ease-out both; }
     </style>
 </head>
 <body>
@@ -246,6 +358,45 @@
 
             <button type="submit" id="inn-btn" class="btn-submit">Проверить точку</button>
         </form>
+    </div>
+
+    <!-- ВКЛАДКА 2: МОИ ЗАЯВКИ -->
+    <div id="screen-requests" class="screen">
+        <div class="user-bar">
+            <span>👤 <span id="display-user-req">—</span></span>
+            <span><button class="btn-logout" onclick="logout()">Выйти</button></span>
+        </div>
+
+        <div class="tab-head">
+            <div>
+                <h2>Мои заявки</h2>
+                <div class="sub" id="req-sub">—</div>
+            </div>
+            <button type="button" class="btn-refresh" onclick="loadRequests()">Обновить</button>
+        </div>
+
+        <div id="req-list"></div>
+    </div>
+
+    <!-- ВКЛАДКА 3: МОИ ТОЧКИ ПО ДНЮ ВИЗИТА -->
+    <div id="screen-daypoints" class="screen">
+        <div class="user-bar">
+            <span>👤 <span id="display-user-pts">—</span></span>
+            <span><button class="btn-logout" onclick="logout()">Выйти</button></span>
+        </div>
+
+        <div class="tab-head">
+            <div>
+                <h2>Мои точки</h2>
+                <div class="sub" id="pts-sub">—</div>
+            </div>
+            <!-- Фильтр рабочих дней в верхнем углу -->
+            <select id="dayFilter" class="day-filter"></select>
+        </div>
+
+        <div class="load-note" id="pts-load">—</div>
+
+        <div id="pts-list"></div>
     </div>
 
     <!-- ОКНО: ПАССИВНАЯ ТОЧКА -->
@@ -407,7 +558,8 @@
         <button type="button" class="btn-back" onclick="showScreen('screen-inn-check')">← Назад к ИНН</button>
         <h2>Регистрация новой ТТ</h2>
         <p class="subtitle">Точка с таким ИНН не найдена. Заполните данные.</p>
-        
+        <div id="add-note" class="status-message" style="display:none; background:#fff3cd; color:#856404;"></div>
+
         <form id="tt-form" autocomplete="off">
             <div class="section-title" data-step="1">Основная информация</div>
             <div class="form-group">
@@ -536,6 +688,33 @@
     </div>
 
 </div>
+
+<!-- ================= НИЖНЯЯ НАВИГАЦИЯ ================= -->
+<nav class="tabbar" id="tabbar">
+    <button type="button" data-tab="search" onclick="openTab('search')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4.5-4.5"></path>
+        </svg>
+        Поиск ИНН
+    </button>
+    <button type="button" data-tab="requests" onclick="openTab('requests')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 6h10M4 12h10M4 18h7"></path><path d="M17 16.5l2 2 3.5-4"></path>
+        </svg>
+        Мои заявки
+        <span class="dot" id="tab-dot" style="display:none;">0</span>
+    </button>
+    <button type="button" data-tab="points" onclick="openTab('points')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.8 7 11 7 11z"></path>
+            <circle cx="12" cy="10" r="2.5"></circle>
+        </svg>
+        Мои точки
+    </button>
+</nav>
 
 <script>
     // Адрес бэкенда. Раньше здесь был Google Apps Script, теперь — свой
@@ -1181,7 +1360,13 @@
     // Дни, уже занятые этим агентом на выбранной точке
     let attachTakenDays = [];
 
-    function refreshDayOptions(ids, taken) {
+    // Дни, где у агента уже 30 визитов по всем точкам. Это другая причина
+    // отказа, чем «занят вами», и подпись в списке должна отличаться —
+    // иначе агент не поймёт, почему день недоступен на новой точке.
+    let attachFullDays = [];
+    let addFullDays = [];
+
+    function refreshDayOptions(ids, taken, full) {
         // Один день нельзя выбрать дважды: два визита в понедельник заняли бы
         // два места из трёх. Поэтому уже выбранные дни блокируются в соседних
         // списках, а занятые ранее — во всех сразу.
@@ -1198,13 +1383,16 @@
             [...select.options].forEach(opt => {
                 if (!opt.value) return;
 
-                const isTaken = (taken || []).includes(opt.value);
+                const isFull = (full || []).includes(opt.value);
+                const isTaken = !isFull && (taken || []).includes(opt.value);
                 // День, уже выбранный в СОСЕДНЕМ списке (в своём — оставляем,
                 // иначе выбранное значение пропало бы из собственного списка)
                 const usedElsewhere = opt.value !== select.value && chosen.includes(opt.value);
 
-                opt.disabled = isTaken || usedElsewhere;
-                opt.textContent = isTaken ? opt.value + ' — уже занят вами' : opt.value;
+                opt.disabled = isFull || isTaken || usedElsewhere;
+                opt.textContent = isFull ? opt.value + ' — заполнен (30 визитов)'
+                                : isTaken ? opt.value + ' — уже занят вами'
+                                : opt.value;
             });
         });
     }
@@ -1222,9 +1410,13 @@
 
         const allIds = [day1Id, day2Id, day3Id];
         const takenFor = () => (limited ? attachTakenDays : []);
+        // Дневной лимит действует в обоих сценариях: новая точка — это
+        // тоже визит, иначе правило обходилось бы через добавление ТТ
+        const fullFor = () => (limited ? attachFullDays : addFullDays);
 
         [day1, day2, day3].forEach(sel => {
-            sel.addEventListener('change', () => refreshDayOptions(allIds, takenFor()));
+            sel.addEventListener('change',
+                () => refreshDayOptions(allIds, takenFor(), fullFor()));
         });
 
         day1.addEventListener('change', function() {
@@ -1309,9 +1501,254 @@
 
     let currentUser = null;
 
+    // Telegram-адрес агента: нужен, чтобы бот прислал уведомление, когда
+    // оператор отметит заявку выполненной. В обычном браузере его нет —
+    // тогда сервер возьмёт адрес, записанный при входе агента в бота.
+    const TG = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+    const TG_ID = (TG && TG.initDataUnsafe && TG.initDataUnsafe.user)
+                  ? TG.initDataUnsafe.user.id : null;
+    if (TG && TG.ready) { try { TG.ready(); TG.expand && TG.expand(); } catch (e) {} }
+
+    // Экраны трёх вкладок. На остальных экранах (прикрепление, добавление,
+    // смена пароля) панель скрыта: уйти с середины заполненной формы —
+    // значит потерять введённое.
+    const TAB_SCREENS = {
+        search:   'screen-inn-check',
+        requests: 'screen-requests',
+        points:   'screen-daypoints',
+    };
+
     function showScreen(screenId) {
         document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
         document.getElementById(screenId).classList.add('active');
+        syncTabbar(screenId);
+        window.scrollTo(0, 0);
+    }
+
+    function syncTabbar(screenId) {
+        const entry = Object.entries(TAB_SCREENS).find(([, id]) => id === screenId);
+        const bar = document.getElementById('tabbar');
+
+        // Формы прикрепления и добавления — часть первой вкладки, поэтому
+        // на них панель скрыта, но выделенной остаётся «Поиск ИНН»
+        const visible = !!entry;
+        bar.classList.toggle('show', visible);
+        document.body.classList.toggle('has-tabs', visible);
+
+        if (!visible) return;
+        bar.querySelectorAll('[data-tab]').forEach(b => {
+            b.classList.toggle('on', b.dataset.tab === entry[0]);
+        });
+    }
+
+    function openTab(tab) {
+        if (!currentUser) return;
+        showScreen(TAB_SCREENS[tab]);
+        if (tab === 'requests') loadRequests();
+        if (tab === 'points') loadDayPoints();
+    }
+
+    // ---------- общий запрос к серверу ----------
+    async function post(payload) {
+        const res = await fetch(WEB_APP_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+        });
+        return res.json();
+    }
+
+    function esc(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function plural(n, one, few, many) {
+        const n10 = n % 10, n100 = n % 100;
+        if (n10 === 1 && n100 !== 11) return one;
+        if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return few;
+        return many;
+    }
+
+    function shortWhen(iso) {
+        if (!iso) return '';
+        return new Date(iso).toLocaleString('ru-RU',
+            { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    // ---------- ВКЛАДКА 2: МОИ ЗАЯВКИ ----------
+    async function loadRequests() {
+        const box = document.getElementById('req-list');
+        box.innerHTML = '<div class="empty-box">⏳ Загружаю заявки...</div>';
+
+        let r;
+        try {
+            r = await post({ action: 'my_requests', agent: currentUser });
+        } catch (err) {
+            box.innerHTML = '<div class="empty-box">Нет связи с сервером.<br>Нажмите «Обновить».</div>';
+            return;
+        }
+
+        if (!r.success) {
+            box.innerHTML = `<div class="empty-box">${esc(r.message)}</div>`;
+            return;
+        }
+
+        const list = r.requests || [];
+        updateTabDot(r.pendingCount || 0);
+
+        document.getElementById('req-sub').textContent = list.length
+            ? (r.pendingCount
+                ? `${r.pendingCount} ${plural(r.pendingCount, 'ждёт', 'ждут', 'ждут')} обработки`
+                : 'все заявки выполнены')
+            : 'заявок пока нет';
+
+        if (!list.length) {
+            box.innerHTML = '<div class="empty-box">Вы ещё не отправляли заявок.<br>' +
+                            'Прикрепите точку на вкладке «Поиск ИНН».</div>';
+            return;
+        }
+
+        box.innerHTML = list.map(req => {
+            const done = req.status === 'done';
+            return `
+            <div class="item ${done ? 'done' : 'pending'}">
+                <div class="item-row">
+                    <div style="min-width:0;">
+                        <span class="kind ${esc(req.kind)}">${esc(req.kindLabel)}</span>
+                        <div class="item-name">${esc(req.pointName)}</div>
+                        <div class="item-meta">
+                            ${req.pointCode ? esc(req.pointCode) : ''}${req.inn ? ' · ИНН ' + esc(req.inn) : ''}
+                        </div>
+                        ${req.visitDay ? `<div class="item-meta">📅 ${esc(req.visitDay)}</div>` : ''}
+                        <div class="item-meta">
+                            ${done
+                                ? 'Выполнено ' + esc(shortWhen(req.doneAt))
+                                : 'Отправлено ' + esc(shortWhen(req.createdAt))}
+                        </div>
+                    </div>
+                    <span class="state ${done ? 'done' : 'pending'}">
+                        ${done ? '✓ готово' : 'в обработке'}
+                    </span>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    function updateTabDot(n) {
+        const dot = document.getElementById('tab-dot');
+        dot.textContent = n;
+        dot.style.display = n > 0 ? 'flex' : 'none';
+    }
+
+    // ---------- ВКЛАДКА 3: МОИ ТОЧКИ ПО ДНЮ ВИЗИТА ----------
+    let dayFilterReady = false;
+
+    async function loadDayPoints(day) {
+        const box = document.getElementById('pts-list');
+        box.innerHTML = '<div class="empty-box">⏳ Загружаю точки...</div>';
+
+        const select = document.getElementById('dayFilter');
+        const chosen = day !== undefined ? day : (dayFilterReady ? select.value : '');
+
+        let r;
+        try {
+            r = await post({ action: 'day_points', agent: currentUser, day: chosen });
+        } catch (err) {
+            box.innerHTML = '<div class="empty-box">Нет связи с сервером.</div>';
+            return;
+        }
+
+        if (!r.success) {
+            box.innerHTML = `<div class="empty-box">${esc(r.message)}</div>`;
+            return;
+        }
+
+        // Список дней строим один раз. Сегодняшний день подписан отдельно —
+        // он выбран по умолчанию, и это должно быть понятно без догадок.
+        if (!dayFilterReady) {
+            const days = r.workDays || [];
+            select.innerHTML = days.map(d =>
+                `<option value="${esc(d)}">${esc(d)}${d === r.today ? ' (сегодня)' : ''}</option>`
+            ).join('') + '<option value="all">Все точки</option>';
+            dayFilterReady = true;
+        }
+        select.value = r.day;
+
+        const list = r.points || [];
+        const isAll = r.day === 'all';
+
+        document.getElementById('pts-sub').textContent = isAll
+            ? `все точки: ${list.length}`
+            : `${r.day}${r.day === r.today ? ' (сегодня)' : ''}: ${list.length} ` +
+              plural(list.length, 'визит', 'визита', 'визитов');
+
+        // Правила и своя нагрузка: агент видит те же цифры, что супервайзер
+        const overPoints = r.pointCount > r.maxPoints;
+        const load = r.dayLoad || {};
+        const todayLoad = load[r.today] || 0;
+        document.getElementById('pts-load').innerHTML =
+            `Точек у вас: <b class="${overPoints ? 'over' : ''}">${r.pointCount}</b> из ${r.maxPoints}` +
+            ` · визитов ${r.today ? 'сегодня' : 'в текущий день'}: ` +
+            `<b class="${todayLoad > r.maxVisitsPerDay ? 'over' : ''}">${todayLoad}</b> из ${r.maxVisitsPerDay}` +
+            `<br>Правила: не больше ${r.maxPoints} торговых точек на агента и ` +
+            `${r.maxVisitsPerDay} визитов в один день.`;
+
+        if (!list.length) {
+            box.innerHTML = isAll
+                ? '<div class="empty-box">У вас пока нет прикреплённых точек.</div>'
+                : `<div class="empty-box">На ${esc(r.day)} визитов не назначено.<br>` +
+                  'Выберите другой день в фильтре сверху.</div>';
+            return;
+        }
+
+        box.innerHTML = list.map(p => {
+            const days = (p.days || '').split(',').map(d => d.trim()).filter(Boolean);
+            return `
+            <div class="item">
+                <div class="item-name">${esc(p.pointName)}</div>
+                <div class="item-meta">${esc(p.pointCode)}${p.inn ? ' · ИНН ' + esc(p.inn) : ''}</div>
+                <div>
+                    ${days.map(d =>
+                        `<span class="pill ${d === r.today ? 'today' : ''}">${esc(d)}</span>`).join('')}
+                    ${p.status === 1 ? '<span class="pill passive">пассивная</span>' : ''}
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    document.getElementById('dayFilter').addEventListener('change', function () {
+        loadDayPoints(this.value);
+    });
+
+    // ---------- ПОДГОТОВКА ФОРМЫ ДОБАВЛЕНИЯ ----------
+    // Новая точка — тоже визит, поэтому переполненные дни закрываются и здесь.
+    // Если узнать нагрузку не удалось, форма просто не ограничивает дни:
+    // лишний день всё равно не пройдёт проверку на сервере.
+    async function prepareAddForm() {
+        addFullDays = [];
+        try {
+            const r = await post({ action: 'day_points', agent: currentUser, day: 'all' });
+            if (r && r.success) {
+                const load = r.dayLoad || {};
+                addFullDays = (r.workDays || [])
+                    .filter(d => (load[d] || 0) >= r.maxVisitsPerDay);
+            }
+        } catch (err) { /* ограничение останется за сервером */ }
+
+        refreshDayOptions(['visitDay1', 'visitDay2', 'visitDay3'], [], addFullDays);
+
+        const note = document.getElementById('add-note');
+        if (note) {
+            if (addFullDays.length) {
+                note.textContent = 'Заполнены по 30 визитов: ' + addFullDays.join(', ') +
+                                   ' — эти дни выбрать нельзя.';
+                note.style.display = 'block';
+            } else {
+                note.style.display = 'none';
+            }
+        }
     }
 
     // 1. АВТОРИЗАЦИЯ
@@ -1390,6 +1827,8 @@
 
                 currentUser = login.toUpperCase();
                 document.getElementById('display-user').textContent = currentUser;
+                document.getElementById('display-user-req').textContent = currentUser;
+                document.getElementById('display-user-pts').textContent = currentUser;
                 document.getElementById('attach-agent-label').textContent = currentUser;
                 document.getElementById('agentLogin').value = currentUser;
 
@@ -1397,6 +1836,12 @@
                     showScreen('screen-inn-check');
                     statusDiv.style.display = 'none';
                     document.getElementById('auth-form').reset();
+                    // Цифра на вкладке «Мои заявки» сразу при входе: агент
+                    // должен видеть, что у него что-то в обработке, не
+                    // заходя туда специально
+                    post({ action: 'my_requests', agent: currentUser })
+                        .then(r => { if (r && r.success) updateTabDot(r.pendingCount || 0); })
+                        .catch(() => {});
                 }, 500);
             } else {
                 statusDiv.className = 'status-message error';
@@ -1457,6 +1902,7 @@
                     await goToAttach(active[0]);
                 } else {
                     document.getElementById('inn').value = innValue;
+                    await prepareAddForm();
                     showScreen('screen-add');
                 }
                 document.getElementById('checkInnInput').value = '';
@@ -1492,7 +1938,8 @@
             agent: currentUser,
             pointCode: document.getElementById('attachPointCode').value,
             pointName: document.getElementById('attachPointName').value,
-            visitDay: attachVisitDays.join(', ')
+            visitDay: attachVisitDays.join(', '),
+            tgId: TG_ID
         };
 
         try {
@@ -1508,7 +1955,8 @@
                 this.reset();
                 document.getElementById('attachDay2-group').style.display = 'none';
                 document.getElementById('attachDay3-group').style.display = 'none';
-                showScreen('screen-inn-check');
+                // Заявка ушла оператору — сразу показываем её на второй вкладке
+                openTab('requests');
             } else {
                 alert("Ошибка: " + result.message);
             }
@@ -1575,7 +2023,8 @@
             category: document.getElementById('category').value,
             deliveryCode: document.getElementById('deliveryCode').value,
             visitDay: addVisitDays.join(', '),
-            comments: document.getElementById('comments').value
+            comments: document.getElementById('comments').value,
+            tgId: TG_ID
         };
 
         try {
@@ -1592,7 +2041,8 @@
                 document.getElementById('visitDay2-group').style.display = 'none';
                 document.getElementById('visitDay3-group').style.display = 'none';
                 document.getElementById('agentLogin').value = currentUser;
-                showScreen('screen-inn-check');
+                // Заявка ушла оператору — показываем её в списке своих заявок
+                openTab('requests');
             } else {
                 alert("Ошибка: " + result.message);
             }
@@ -1670,6 +2120,10 @@
     function logout() {
         currentUser = null;
         document.getElementById('auth-form').reset();
+        // Список дней и счётчик заявок принадлежат ушедшему агенту:
+        // следующему они не должны достаться
+        dayFilterReady = false;
+        updateTabDot(0);
         showScreen('screen-auth');
     }
 
@@ -1912,10 +2366,22 @@
         }
 
         if (!check.allowed) {
+            // Тексты отказов совпадают с ботом: правило одно, и объяснение
+            // не должно зависеть от того, откуда агент зашёл
             if (check.reason === 'brand') {
                 showBlocked("В этой точке закреплён другой агент вашего бренда",
                             point.pointName,
                             "Агент: " + check.blockedBy);
+            } else if (check.reason === 'points') {
+                showBlocked("Достигнут лимит — " + check.maxPoints + " торговых точек",
+                            point.pointName,
+                            "У вас сейчас " + check.pointCount + " точек. Новую взять нельзя. " +
+                            "Чтобы освободить место, обратитесь к супервайзеру.");
+            } else if (check.reason === 'day_limit') {
+                showBlocked("Все дни заполнены по " + check.maxVisitsPerDay + " визитов",
+                            point.pointName,
+                            "Свободных дней визита не осталось. " +
+                            "Разгрузить день может супервайзер.");
             } else {
                 showBlocked("У вас уже 3 дня в этой точке",
                             point.pointName,
@@ -1928,14 +2394,17 @@
 
         document.getElementById('attachPointName').value = point.pointName;
         document.getElementById('attachPointCode').value = point.pointCode;
-        applyTakenDays(check.myDays || [], check.remaining);
+        applyTakenDays(check.myDays || [], check.remaining, check.fullDays || []);
         showScreen('screen-attach');
     }
 
-    function applyTakenDays(taken, remaining) {
+    function applyTakenDays(taken, remaining, full) {
         // Дни, уже занятые этим агентом на этой точке, выбирать нельзя:
         // иначе агент занял бы один день дважды и упёрся в лимит зря.
-        attachTakenDays = taken;
+        // Переполненные дни (30 визитов) убираются по той же причине —
+        // сервер их всё равно не примет.
+        attachTakenDays = (taken || []).concat(full || []);
+        attachFullDays = full || [];
 
         // Сбрасываем прошлый выбор: точка новая, старые дни к ней не относятся
         ['attachDay1', 'attachDay2', 'attachDay3'].forEach(id => {
@@ -1945,7 +2414,8 @@
         document.getElementById('attachDay2-group').style.display = 'none';
         document.getElementById('attachDay3-group').style.display = 'none';
 
-        refreshDayOptions(['attachDay1', 'attachDay2', 'attachDay3'], taken);
+        refreshDayOptions(['attachDay1', 'attachDay2', 'attachDay3'],
+                          taken, attachFullDays);
 
         // Больше остатка выбрать нельзя: с двумя занятыми днями видно
         // только одно поле, с одним — два
@@ -1961,9 +2431,17 @@
 
         const note = document.getElementById('attach-note');
         if (note) {
+            const parts = [];
             if (taken.length) {
-                note.textContent = 'У вас уже занято: ' + taken.join(', ') +
-                                   '. Можно выбрать ещё ' + remaining + '.';
+                parts.push('У вас уже занято: ' + taken.join(', ') +
+                           '. Можно выбрать ещё ' + remaining + '.');
+            }
+            if (attachFullDays.length) {
+                parts.push('Заполнены по 30 визитов: ' + attachFullDays.join(', ') +
+                           ' — эти дни выбрать нельзя.');
+            }
+            if (parts.length) {
+                note.textContent = parts.join(' ');
                 note.style.display = 'block';
             } else {
                 note.style.display = 'none';

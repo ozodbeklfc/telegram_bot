@@ -37,7 +37,8 @@ def build_paginated_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def build_days_keyboard(selected: list[str], taken: list[str] = None) -> InlineKeyboardMarkup:
+def build_days_keyboard(selected: list[str], taken: list[str] = None,
+                        full: list[str] = None) -> InlineKeyboardMarkup:
     """
     Мультивыбор дней недели. Максимум 3 дня на точку.
 
@@ -45,12 +46,18 @@ def build_days_keyboard(selected: list[str], taken: list[str] = None) -> InlineK
     taken    — дни, уже занятые этим же агентом на этой точке по прошлым
                прикреплениям. Помечаются замком и повторно не выбираются:
                иначе агент занял бы один день дважды и упёрся в лимит зря.
+    full     — дни, где у агента уже 30 визитов по всем точкам. Помечаются
+               знаком «нельзя»: день не его личный выбор, а упёршийся лимит,
+               и замок здесь читался бы как «этот день у меня уже есть».
     """
     taken = taken or []
+    full = full or []
     rows = []
     for idx, day in enumerate(DAYS):
         if day in taken:
             mark = "🔒 "
+        elif day in full:
+            mark = "🚫 "
         elif day in selected:
             mark = "✅ "
         else:

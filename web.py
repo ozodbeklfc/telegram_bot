@@ -88,14 +88,39 @@ async def handle_api(request: web.Request) -> web.Response:
                 point_code=payload.get("pointCode", ""),
                 point_name=payload.get("pointName", ""),
                 visit_day=payload.get("visitDay", ""),
+                tg_id=payload.get("tgId"),
+                source="site",
             )
             if result.get("success"):
                 await notify.notify_admin(notify.build_attach_text(payload))
 
         elif action == "add_tt":
-            result = await api.add_tt(payload)
+            result = await api.add_tt({**payload, "source": "site"})
             if result.get("success"):
                 await notify.notify_admin(notify.build_add_text(payload))
+
+        # ---------- заявки агента (вкладка «Мои заявки») ----------
+        elif action == "my_requests":
+            result = await api.my_requests(payload.get("agent", ""))
+
+        # ---------- точки по дню визита (вкладка «Мои точки») ----------
+        elif action == "day_points":
+            result = await api.day_points(
+                payload.get("agent", ""), payload.get("day", ""))
+
+        # ---------- лист и архив оператора ----------
+        elif action == "panel_requests":
+            result = await api.panel_requests(
+                payload.get("token", ""), payload.get("search", ""))
+
+        elif action == "panel_request_done":
+            result = await api.panel_request_done(
+                payload.get("token", ""), payload.get("id", 0))
+
+        elif action == "panel_archive":
+            result = await api.panel_archive(
+                payload.get("token", ""), payload.get("day", ""),
+                payload.get("search", ""))
 
         elif action == "panel_login":
             result = await api.panel_login(

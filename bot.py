@@ -5,7 +5,7 @@ import re
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
+from storage import PostgresStorage
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardRemove, ReplyKeyboardMarkup, BotCommand,
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -315,14 +315,14 @@ async def process_password(message: Message, state: FSMContext):
     checking_msg = await message.answer("⏳ Проверяю логин и пароль...")
     result = await api.login(login_value, password)
 
-    if result.get("success") and result.get("role") in ("admin", "supervisor"):
-        # Админ работает через панель бренда, а не через бота: прикреплять
-        # точки он не должен
+    if result.get("success") and result.get("role") in ("admin", "supervisor", "operator"):
+        # Супервайзеры, админы и операторы работают в панели в браузере,
+        # а не в боте: точки они не прикрепляют
         await state.set_state(AuthStates.waiting_login)
         await checking_msg.edit_text(
             "🔒 Это вход для агентов.\n\n"
-            "Панель супервайзера открывается в браузере — там видно ваших "
-            "агентов, их точки и проблемы.\n\n"
+            "Панель супервайзера и лист заявок оператора открываются "
+            "в браузере.\n\n"
             "Введите логин агента:"
         )
         await delete_message_safe(message)
@@ -330,8 +330,15 @@ async def process_password(message: Message, state: FSMContext):
 
     if result.get("success"):
         await state.set_data({"agent": login_value.upper()})
+
+        # Запоминаем Telegram агента: без этого бот не сможет написать ему
+        # первым, когда оператор отметит его заявку выполненной
+        await api.remember_tg_id(login_value, message.from_user.id)
+
         await checking_msg.edit_text(
             f"✅ Успешный вход!\n\n👤 Агент: {login_value}\n\n"
+            f"📋 Правила: не больше {api.MAX_POINTS_PER_AGENT} торговых точек "
+            f"и {api.MAX_VISITS_PER_DAY} визитов в один день.\n"
             f"🔑 Сменить пароль — команда /change_password"
         )
         await delete_message_safe(message)  # убираем пароль из переписки
@@ -479,27 +486,35 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         return False
 
     if not check.get("allowed"):
-        if check.get("reason") == "brand":
-            await message.answer(
-                f"⛔️ В ЭТОЙ ТОЧКЕ ЗАКРЕПЛЁН ДРУГОЙ АГЕНТ ВАШЕГО БРЕНДА\n\n"
-                f"🏪 {point['pointName']}\n"
-                f"👤 Агент: {check.get('blockedBy')}\n\n"
-                f"Введите другой ИНН:"
-            )
-        else:
-            days = ", ".join(check.get("myDays", []))
-            await message.answer(
-                f"⛔️ У ВАС УЖЕ 3 ДНЯ В ЭТОЙ ТОЧКЕ\n\n"
-                f"🏪 {point['pointName']}\n"
-                f"📅 Ваши дни: {days}\n\n"
-                f"Больше дней добавить нельзя. Введите другой ИНН:"
-            )
+        reason = check.get("reason")
+
+        if reason == "brand":
+            head = "⛔️ В ЭТОЙ ТОЧКЕ ЗАКРЕПЛЁН ДРУГОЙ АГЕНТ ВАШЕГО БРЕНДА"
+            body = f"👤 Агент: {check.get('blockedBy')}"
+        elif reason == "points":
+            head = f"⛔️ ДОСТИГНУТ ЛИМИТ — {api.MAX_POINTS_PER_AGENT} ТОРГОВЫХ ТОЧЕК"
+            body = (f"📊 У вас сейчас: {check.get('pointCount')} точек\n\n"
+                    f"Новую взять нельзя. Чтобы освободить место, обратитесь "
+                    f"к супервайзеру — он открепит ненужные точки.")
+        elif reason == "day_limit":
+            head = f"⛔️ ВСЕ ДНИ ЗАПОЛНЕНЫ ПО {api.MAX_VISITS_PER_DAY} ВИЗИТОВ"
+            body = ("📅 Свободных дней не осталось.\n\n"
+                    + day_load_text(check.get("dayLoad", {})))
+        else:  # reason == 'limit'
+            head = f"⛔️ У ВАС УЖЕ {api.MAX_VISIT_DAYS} ДНЯ В ЭТОЙ ТОЧКЕ"
+            body = (f"📅 Ваши дни: {', '.join(check.get('myDays', []))}\n\n"
+                    f"Больше дней добавить нельзя.")
+
+        await message.answer(
+            f"{head}\n\n🏪 {point['pointName']}\n{body}\n\nВведите другой ИНН:"
+        )
         await state.set_data({"agent": agent})
         await ask_inn(message, state)
         return False
 
     taken = check.get("myDays", [])
     remaining = check.get("remaining", 3)
+    full = check.get("fullDays", [])
 
     await state.set_data({
         "agent": agent,
@@ -507,22 +522,34 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         "point_name": point["pointName"],
         "visit_days": [],
         "taken_days": taken,
+        "full_days": full,
         "remaining_days": remaining,
     })
     await state.set_state(AttachStates.choosing_days)
 
     note = ""
     if taken:
-        note = (f"\n\n📅 У вас уже занято: {', '.join(taken)}\n"
-                f"Можно выбрать ещё {remaining}.")
+        note += (f"\n\n📅 У вас уже занято: {', '.join(taken)}\n"
+                 f"Можно выбрать ещё {remaining}.")
+    if full:
+        note += (f"\n\n🚫 Заполнены по {api.MAX_VISITS_PER_DAY} визитов: "
+                 f"{', '.join(full)} — эти дни выбрать нельзя.")
 
     await message.answer(
         f"{header}🏪 {point['pointName']}\n"
         f"🔢 Код: {point['pointCode']}{note}\n\n"
         f"Выберите дни визита:",
-        reply_markup=build_days_keyboard([], taken),
+        reply_markup=build_days_keyboard([], taken, full),
     )
     return True
+
+
+def day_load_text(day_load: dict) -> str:
+    """Сколько визитов у агента в каждый день — строкой для сообщения."""
+    if not day_load:
+        return ""
+    lines = [f"{d} — {day_load.get(d, 0)}" for d in data.DAYS if d in day_load]
+    return "Ваша загрузка по дням:\n" + "\n".join(lines)
 
 
 def build_points_text(inn: str, points: list) -> str:
@@ -821,10 +848,23 @@ async def add_delivery(callback: CallbackQuery, state: FSMContext):
     delivery_code = delivery_list[idx]
     await state.update_data(deliveryCode=delivery_code, visit_days=[])
 
+    # Новая точка — это тоже визит, поэтому дневной лимит действует и здесь.
+    # Иначе агент, упёршийся в 30 визитов, обходил бы правило через
+    # добавление точек.
+    load = await api.agent_load(fsm_data.get("agent", ""))
+    full = load.get("fullDays", []) if load.get("success") else []
+    await state.update_data(full_days=full)
+
+    note = ""
+    if full:
+        note = (f"\n🚫 Заполнены по {api.MAX_VISITS_PER_DAY} визитов: "
+                f"{', '.join(full)} — эти дни выбрать нельзя.")
+
     await state.set_state(AddStates.choosing_days)
     await callback.message.edit_text(
-        f"Код доставщика: {delivery_code}\n\n1️⃣4️⃣ Выберите дни визита (можно до 3):",
-        reply_markup=build_days_keyboard([]),
+        f"Код доставщика: {delivery_code}\n\n"
+        f"1️⃣4️⃣ Выберите дни визита (можно до 3):{note}",
+        reply_markup=build_days_keyboard([], [], full),
     )
     await safe_answer(callback)
 
@@ -836,6 +876,20 @@ async def add_delivery(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "noop")
 async def noop_handler(callback: CallbackQuery):
     await safe_answer(callback)
+
+
+@router.callback_query(StateFilter(None))
+async def stale_callback(callback: CallbackQuery, state: FSMContext):
+    """
+    Кнопка из сообщения, к которому уже нет состояния.
+
+    Так бывает, если сценарий прервали командой /start или сообщение
+    пролежало в чате слишком долго. Молча игнорировать нельзя: человек
+    жмёт и не понимает, почему ничего не происходит.
+    """
+    await safe_answer(callback,
+                      "Этот шаг уже неактуален. Наберите /start и начните заново",
+                      show_alert=True)
 
 
 @router.callback_query(F.data.regexp(r"^(region|oblast|okrug|rayon|format|channel|type|category|delivery)_page:\d+$"))
@@ -867,12 +921,21 @@ async def toggle_day(callback: CallbackQuery, state: FSMContext):
     fsm_data = await state.get_data()
     selected = fsm_data.get("visit_days", [])
     taken = fsm_data.get("taken_days", [])
+    full = fsm_data.get("full_days", [])
     # В сценарии добавления новой точки ограничений нет — там всегда 3 дня
     remaining = fsm_data.get("remaining_days", 3)
 
     if day in taken:
         await safe_answer(callback, f"{day} — этот день у вас уже занят на этой точке",
                           show_alert=True)
+        return
+
+    if day in full:
+        await safe_answer(
+            callback,
+            f"{day} — у вас уже {api.MAX_VISITS_PER_DAY} визитов в этот день. "
+            f"Это предел, выберите другой день.",
+            show_alert=True)
         return
 
     if day in selected:
@@ -890,7 +953,8 @@ async def toggle_day(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(visit_days=selected)
-    await callback.message.edit_reply_markup(reply_markup=build_days_keyboard(selected, taken))
+    await callback.message.edit_reply_markup(
+        reply_markup=build_days_keyboard(selected, taken, full))
     await safe_answer(callback)
 
 
@@ -990,6 +1054,9 @@ async def add_confirm(callback: CallbackQuery, state: FSMContext):
         "deliveryCode": fsm_data.get("deliveryCode"),
         "visitDay": ", ".join(fsm_data.get("visit_days", [])),
         "comments": fsm_data.get("comments") or "",
+        # Адрес для уведомления о готовности заявки
+        "tgId": callback.from_user.id,
+        "source": "bot",
     }
 
     result = await api.add_tt(payload)
@@ -1054,6 +1121,8 @@ async def attach_confirm(callback: CallbackQuery, state: FSMContext):
         point_code=fsm_data.get("point_code"),
         point_name=fsm_data.get("point_name"),
         visit_day=", ".join(fsm_data.get("visit_days", [])),
+        tg_id=callback.from_user.id,
+        source="bot",
     )
 
     if result.get("success"):
@@ -1214,7 +1283,10 @@ def validate_new_password(password: str, current_password: str) -> str | None:
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
+    # Состояние в базе, а не в памяти: при деплое процесс перезапускается,
+    # и с MemoryStorage все, кто заполняли форму, теряли шаг — кнопки
+    # переставали работать
+    dp = Dispatcher(storage=PostgresStorage(api.get_pool))
     dp.include_router(router)
 
     # Команды в меню Telegram (кнопка "/" рядом с полем ввода)
