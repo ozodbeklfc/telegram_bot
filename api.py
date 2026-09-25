@@ -368,6 +368,7 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
                        c.inn,
                        COALESCE(c.status, 0)      AS status,
                        COALESCE(c.type, 'def')    AS type,
+                       COALESCE(c.is_top, false)  AS is_top,
                        m.days,
                        m.day_count,
                        COALESCE(f.agents_same_brand, 1) AS agents_same_brand
@@ -388,7 +389,11 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
     points = []
     for r in rows:
         problems = []
-        if r["day_count"] > MAX_VISIT_DAYS:
+        is_top = bool(r["is_top"])
+        # Сколько дней разрешено именно здесь: ТОП — до трёх, обычной — один
+        max_here = max_days_for(is_top)
+
+        if r["day_count"] > max_here:
             problems.append("days")
         if r["agents_same_brand"] > 1 and r["type"] != "chain":
             problems.append("brand")
@@ -399,8 +404,10 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
             "inn": r["inn"] or "",
             "status": r["status"],
             "type": r["type"],
+            "isTop": is_top,
             "days": r["days"] or "",
             "dayCount": r["day_count"],
+            "maxDaysHere": max_here,
             "problems": problems,
         })
 
@@ -420,9 +427,13 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
         "pointCount": load.get("pointCount", 0),
         "dayLoad": load.get("dayLoad", {}),
         "workDays": list(WORK_DAYS),
+        "weekVisits": load.get("weekVisits", 0),
+        "weekCapacity": load.get("weekCapacity", 0),
+        "topCount": sum(1 for p in points if p["isTop"]),
         "maxPoints": MAX_POINTS_PER_AGENT,
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
         "maxDays": MAX_VISIT_DAYS,
+        "maxDaysRegular": MAX_VISIT_DAYS_REGULAR,
     }
 
 
@@ -441,7 +452,8 @@ async def point_details(point_code: str, agent: str = "") -> dict:
             info = await conn.fetchrow(
                 """
                 SELECT point_name, inn, COALESCE(type, 'def') AS type,
-                       COALESCE(status, 0) AS status
+                       COALESCE(status, 0) AS status,
+                       COALESCE(is_top, false) AS is_top
                   FROM client_base WHERE point_code = $1
                 """,
                 point_code,
@@ -463,13 +475,17 @@ async def point_details(point_code: str, agent: str = "") -> dict:
         return _db_error(e)
 
     point_type = (info["type"] if info else "def")
+    is_top = bool(info["is_top"]) if info else False
+    # Норма дней зависит от точки: ТОП — до трёх, обычная — один
+    max_here = max_days_for(is_top)
+
     agents = [
         {
             "agent": r["agent"],
             "days": r["days"] or "",
             "dayList": split_days(r["days"]),
             "dayCount": r["day_count"],
-            "tooManyDays": r["day_count"] > MAX_VISIT_DAYS,
+            "tooManyDays": r["day_count"] > max_here,
         }
         for r in rows
     ]
@@ -496,12 +512,15 @@ async def point_details(point_code: str, agent: str = "") -> dict:
         "pointName": (info["point_name"] if info else None) or (rows[0]["point_name"] if rows else "—"),
         "inn": (info["inn"] if info else "") or "",
         "type": point_type,
+        "isTop": is_top,
         "status": (info["status"] if info else 0),
         "agents": agents,
         "sameBrandAgents": same_brand,
         "overDaysAgents": over_days,
         "problems": problems,
-        "maxDays": MAX_VISIT_DAYS,
+        "maxDays": max_here,
+        "maxDaysTop": MAX_VISIT_DAYS,
+        "workDays": list(WORK_DAYS),
     }
 
 
@@ -578,6 +597,261 @@ async def set_point_type(point_code: str, point_type: str) -> dict:
     return {"success": True, "type": point_type,
             "message": "Точка отмечена как сетевая" if point_type == "chain"
                        else "Точка отмечена как обычная"}
+
+
+async def set_point_top(point_code: str, is_top: bool) -> dict:
+    """
+    Помечает точку ТОП или обычной.
+
+    От этого зависит, сколько дней визита на ней можно занять: ТОП — до
+    трёх, обычная — ровно один. Отметка отдельная от «сетевой»: точка
+    бывает и той, и другой сразу.
+
+    Уже прикреплённые дни при снятии отметки НЕ трогаются: снять лишние —
+    осознанное решение супервайзера, и делать это молча за него нельзя.
+    Точка просто станет проблемной в списке.
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            updated = await conn.fetchval(
+                "UPDATE client_base SET is_top = $2 WHERE point_code = $1 RETURNING point_code",
+                point_code, bool(is_top),
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    if updated is None:
+        return {"success": False, "message": "Точка не найдена в клиентской базе"}
+
+    return {"success": True, "isTop": bool(is_top),
+            "message": f"Точка отмечена как ТОП — до {MAX_VISIT_DAYS} дней визита"
+                       if is_top else
+                       "Точка отмечена как обычная — один день визита в неделю"}
+
+
+async def transfer_candidates(from_agent: str, point_code: str,
+                              supervisor: str = "", any_agent: bool = False) -> dict:
+    """
+    Кому можно передать точку: агенты того же бренда с запасом до лимита.
+
+    Отдаём вместе с их нагрузкой, чтобы супервайзер выбирал не вслепую:
+    сколько у кандидата точек, сколько визитов в каждый день и какие дни
+    у него ещё свободны.
+
+    any_agent=True — для общего админа: он видит агентов бренда независимо
+    от того, кому они подчиняются. Супервайзер видит только своих.
+    """
+    from_agent = (from_agent or "").strip().upper()
+    brand = agent_brand(from_agent)
+    if not brand:
+        return {"success": False, "message": "Не указан агент"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT upper(login) AS agent
+                  FROM users
+                 WHERE COALESCE(role, 'agent') = 'agent'
+                   AND upper(left(login, 2)) = $1
+                   AND upper(login) <> $2
+                   AND ($3 OR upper(COALESCE(supervisor, '')) = $4)
+                 ORDER BY login
+                """,
+                brand, from_agent, any_agent, (supervisor or "").strip().upper(),
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    candidates = []
+    for r in rows:
+        load = await agent_load(r["agent"])
+        if not load.get("success"):
+            continue
+
+        # Отдающего на точке как бы нет: его снимут при передаче
+        check = await check_attach_allowed(point_code, r["agent"],
+                                           ignore_agent=from_agent)
+        candidates.append({
+            "agent": r["agent"],
+            "pointCount": load["pointCount"],
+            "freePoints": max(0, MAX_POINTS_PER_AGENT - load["pointCount"]),
+            "dayLoad": load["dayLoad"],
+            "fullDays": load["fullDays"],
+            "weekVisits": load["weekVisits"],
+            # Может ли он вообще взять эту точку и какие дни ему доступны
+            "canTake": bool(check.get("allowed")),
+            "reason": check.get("reason"),
+            "freeDays": check.get("freeDays", []),
+            "maxDaysHere": check.get("maxDaysHere", MAX_VISIT_DAYS),
+        })
+
+    # Сначала те, кто реально может взять, и у кого больше запаса
+    candidates.sort(key=lambda c: (not c["canTake"], -c["freePoints"], c["agent"]))
+
+    return {
+        "success": True,
+        "brand": brand,
+        "fromAgent": from_agent,
+        "candidates": candidates,
+        "maxPoints": MAX_POINTS_PER_AGENT,
+        "maxVisitsPerDay": MAX_VISITS_PER_DAY,
+    }
+
+
+async def transfer_point(point_code: str, from_agent: str, to_agent: str,
+                         days: list, by_login: str = "") -> dict:
+    """
+    Передаёт точку от одного агента другому.
+
+    Делается одной транзакцией: если новые дни не записались, старые
+    должны остаться на месте — иначе точка повиснет ничьей, и агент
+    просто перестанет на неё ездить, никого не предупредив.
+
+    Дни выбирает супервайзер: у принимающего агента свой маршрут, и дни
+    отдающего могут у него не подойти.
+    """
+    from_agent = (from_agent or "").strip().upper()
+    to_agent = (to_agent or "").strip().upper()
+    days = [d.strip() for d in (days or []) if d and d.strip()]
+
+    if not point_code or not from_agent or not to_agent:
+        return {"success": False, "message": "Не указана точка или агенты"}
+
+    if from_agent == to_agent:
+        return {"success": False, "message": "Это тот же самый агент"}
+
+    if not days:
+        return {"success": False, "message": "Не выбран ни один день визита"}
+
+    repeated = [d for d in set(days) if days.count(d) > 1]
+    if repeated:
+        return {"success": False,
+                "message": f"День выбран дважды: {', '.join(repeated)}"}
+
+    denied = await _require_agent(to_agent.lower())
+    if denied:
+        return {"success": False,
+                "message": f"{to_agent}: {denied['message']}"}
+
+    if agent_brand(to_agent) != agent_brand(from_agent):
+        return {"success": False,
+                "message": f"{to_agent} другого бренда — точка обслуживается "
+                           f"агентом бренда {agent_brand(from_agent)}"}
+
+    # Те же правила, что и при обычном прикреплении: передача не должна
+    # быть дырой, через которую у агента появляется 151-я точка
+    check = await check_attach_allowed(point_code, to_agent,
+                                       ignore_agent=from_agent)
+    if not check.get("success"):
+        return check
+    if not check.get("allowed"):
+        return {"success": False, "message": f"{to_agent}: {attach_denied_text(check)}"}
+
+    max_here = check.get("maxDaysHere", MAX_VISIT_DAYS)
+    if len(days) > max_here:
+        return {"success": False,
+                "message": f"Выбрано дней: {len(days)}. На эту точку разрешено "
+                           f"{'не больше ' + str(max_here) if max_here > 1 else 'ровно один'}."}
+
+    overloaded = [d for d in days if d in check.get("fullDays", [])]
+    if overloaded:
+        return {"success": False,
+                "message": f"У {to_agent} в {', '.join(overloaded)} уже "
+                           f"{MAX_VISITS_PER_DAY} визитов. Выберите другие дни."}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                info = await conn.fetchrow(
+                    """
+                    SELECT max(point_name) AS point_name,
+                           string_agg(DISTINCT visit_day, ', ') AS days
+                      FROM attachments
+                     WHERE point_code = $1 AND upper(agent) = $2
+                    """,
+                    point_code, from_agent,
+                )
+                if info is None or info["point_name"] is None:
+                    return {"success": False,
+                            "message": f"{from_agent} не закреплён за этой точкой"}
+
+                point_name = info["point_name"]
+                old_days = info["days"] or ""
+
+                await conn.execute(
+                    "DELETE FROM attachments WHERE point_code = $1 AND upper(agent) = $2",
+                    point_code, from_agent,
+                )
+                await conn.executemany(
+                    """
+                    INSERT INTO attachments
+                        (point_code, point_name, agent_brand, agent, visit_day)
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    [(point_code, point_name, agent_brand(to_agent), to_agent, d)
+                     for d in days],
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO transfer_log
+                        (point_code, point_name, from_agent, to_agent, days, by_login)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    point_code, point_name, from_agent, to_agent,
+                    ", ".join(days), (by_login or "").upper(),
+                )
+    except Exception as e:
+        return _db_error(e)
+
+    # Оба агента должны узнать: один потерял точку из маршрута,
+    # другой получил её вместе с днями
+    await _notify_transfer(from_agent, to_agent, point_name, point_code,
+                           old_days, ", ".join(days))
+
+    return {"success": True,
+            "message": f"Точка передана: {from_agent} → {to_agent} ({', '.join(days)})"}
+
+
+async def _notify_transfer(from_agent: str, to_agent: str, point_name: str,
+                           point_code: str, old_days: str, new_days: str) -> None:
+    """Сообщает обоим агентам о передаче точки."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT upper(login) AS login, tg_id FROM users "
+                " WHERE upper(login) = ANY($1::text[]) AND tg_id IS NOT NULL",
+                [from_agent, to_agent],
+            )
+    except Exception:
+        logger.exception("Не удалось найти Telegram агентов для уведомления о передаче")
+        return
+
+    tg = {r["login"]: r["tg_id"] for r in rows}
+
+    if tg.get(from_agent):
+        await notify.notify_user(tg[from_agent], (
+            "📤 ТОЧКА ПЕРЕДАНА ДРУГОМУ АГЕНТУ\n\n"
+            f"🏪 {point_name}\n"
+            f"🔢 Код: {point_code}\n"
+            + (f"📅 Было: {old_days}\n" if old_days else "")
+            + f"👤 Теперь её ведёт: {to_agent}\n\n"
+            "Точка убрана из вашего маршрута."
+        ))
+
+    if tg.get(to_agent):
+        await notify.notify_user(tg[to_agent], (
+            "📥 ВАМ ПЕРЕДАНА ТОЧКА\n\n"
+            f"🏪 {point_name}\n"
+            f"🔢 Код: {point_code}\n"
+            f"📅 Дни визита: {new_days}\n"
+            f"👤 Передана от: {from_agent}\n\n"
+            "Точка добавлена в ваш маршрут — она уже видна во вкладке «Мои точки»."
+        ))
 
 
 # Сколько живёт пропуск в панель. Сутки: смена достаточно длинная,
@@ -830,6 +1104,56 @@ async def panel_set_point_type(token: str, point_code: str, point_type: str) -> 
     return await set_point_type(point_code, point_type)
 
 
+async def panel_set_point_top(token: str, point_code: str, is_top: bool) -> dict:
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if auth["isOperator"]:
+        return {"success": False, "message": "Недостаточно прав"}
+    return await set_point_top(point_code, is_top)
+
+
+async def panel_transfer_candidates(token: str, agent: str, point_code: str) -> dict:
+    """Кому супервайзер может отдать точку."""
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if auth["isOperator"]:
+        return {"success": False, "message": "Недостаточно прав"}
+    if not await _agent_allowed(auth, agent):
+        return {"success": False, "message": "Этот агент не в вашем подчинении"}
+
+    return await transfer_candidates(
+        agent, point_code,
+        supervisor=auth.get("supervisor", ""),
+        any_agent=auth["isAdmin"],
+    )
+
+
+async def panel_transfer_point(token: str, point_code: str, from_agent: str,
+                               to_agent: str, days: list) -> dict:
+    """
+    Передача точки. Проверяются ОБА агента: и тот, у кого забираем,
+    и тот, кому отдаём. Иначе супервайзер, подставив чужой логин, мог бы
+    сгрузить точку в другую команду.
+    """
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if auth["isOperator"]:
+        return {"success": False, "message": "Недостаточно прав"}
+
+    if not await _agent_allowed(auth, from_agent):
+        return {"success": False, "message": "Этот агент не в вашем подчинении"}
+    if not await _agent_allowed(auth, to_agent):
+        return {"success": False,
+                "message": f"{to_agent.upper()} не в вашем подчинении — "
+                           f"передать точку можно только своему агенту"}
+
+    return await transfer_point(point_code, from_agent, to_agent, days,
+                                by_login=auth["login"])
+
+
 async def panel_change_password(token: str, current_password: str, new_password: str) -> dict:
     """Смена пароля из панели — по пропуску, логин берётся из сессии."""
     auth = await _check_token(token)
@@ -906,9 +1230,6 @@ async def check_inn(inn: str) -> dict:
     }
 
 
-# Сколько дней визита агент может занять на одной точке
-MAX_VISIT_DAYS = 3
-
 # ----------------------------------------------------------------------
 # ЛИМИТЫ НАГРУЗКИ АГЕНТА
 #
@@ -921,7 +1242,23 @@ MAX_VISIT_DAYS = 3
 # работа супервайзера в панели.
 # ----------------------------------------------------------------------
 MAX_POINTS_PER_AGENT = 150      # не больше 150 торговых точек на агента
-MAX_VISITS_PER_DAY = 30         # не больше 30 визитов в один день недели
+MAX_VISITS_PER_DAY = 36         # не больше 36 визитов в один день недели
+
+# Сколько дней визита агент может занять на ОДНОЙ точке.
+#
+# Обычный ритейл объезжают раз в неделю: агент проходит территорию по
+# маршруту и заходит на точку один раз. Когда точка стояла на нескольких
+# днях, заказы начинали пробивать вне маршрута — ради этого правило
+# и вводится.
+#
+# Три дня оставлены только ТОП-точкам: к ним ездят чаще по обороту.
+MAX_VISIT_DAYS = 3              # ТОП-точка
+MAX_VISIT_DAYS_REGULAR = 1      # обычная точка
+
+
+def max_days_for(is_top: bool) -> int:
+    """Сколько дней визита разрешено на этой точке."""
+    return MAX_VISIT_DAYS if is_top else MAX_VISIT_DAYS_REGULAR
 
 # Узбекистан круглый год живёт в UTC+5, перевода часов нет.
 # Нужен для «сегодняшнего дня визита» и для архива по дням.
@@ -944,14 +1281,23 @@ def split_days(visit_day: str) -> list[str]:
     return [d.strip() for d in (visit_day or "").split(",") if d.strip()]
 
 
+# Чем считается «одна точка» для лимитов.
+#
+# У одной физической точки бывает несколько кодов контрагента с общим ИНН
+# (KALINA, UNILEVER, NIVEA — разные категории поставки). Агент приезжает
+# туда ОДИН раз, поэтому и место в лимите должно занимать одно. Считаем
+# по ИНН; у служебных строк без ИНН место считается по коду, иначе все
+# они слились бы в одну «точку» с пустым ИНН.
+POINT_KEY = "COALESCE(NULLIF(c.inn, ''), a.point_code)"
+
+
 async def agent_load(agent: str) -> dict:
     """
     Текущая нагрузка агента: сколько у него точек и сколько визитов
     в каждый день недели.
 
-    Визит считается по РАЗНЫМ точкам: если на одной точке у агента
-    записан понедельник дважды (такое осталось от старых загрузок),
-    поехать он всё равно может один раз.
+    И точки, и визиты считаются по уникальным ИНН (см. POINT_KEY):
+    три кода одной точки — одно место в лимите и один визит в день.
     """
     agent = (agent or "").strip().upper()
     if not agent:
@@ -961,16 +1307,22 @@ async def agent_load(agent: str) -> dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
             points = await conn.fetchval(
-                "SELECT count(DISTINCT point_code) FROM attachments WHERE upper(agent) = $1",
+                f"""
+                SELECT count(DISTINCT {POINT_KEY})
+                  FROM attachments a
+             LEFT JOIN client_base c ON c.point_code = a.point_code
+                 WHERE upper(a.agent) = $1
+                """,
                 agent,
             )
             rows = await conn.fetch(
-                """
-                SELECT visit_day, count(DISTINCT point_code) AS visits
-                  FROM attachments
-                 WHERE upper(agent) = $1
-                   AND visit_day IS NOT NULL AND visit_day <> ''
-                 GROUP BY visit_day
+                f"""
+                SELECT a.visit_day, count(DISTINCT {POINT_KEY}) AS visits
+                  FROM attachments a
+             LEFT JOIN client_base c ON c.point_code = a.point_code
+                 WHERE upper(a.agent) = $1
+                   AND a.visit_day IS NOT NULL AND a.visit_day <> ''
+                 GROUP BY a.visit_day
                 """,
                 agent,
             )
@@ -978,6 +1330,7 @@ async def agent_load(agent: str) -> dict:
         return _db_error(e)
 
     day_load = {r["visit_day"].strip(): r["visits"] for r in rows if r["visit_day"]}
+    used = sum(day_load.values())
 
     return {
         "success": True,
@@ -985,24 +1338,35 @@ async def agent_load(agent: str) -> dict:
         "pointCount": points or 0,
         "dayLoad": day_load,
         "fullDays": sorted(d for d, n in day_load.items() if n >= MAX_VISITS_PER_DAY),
+        "weekVisits": used,
+        "weekCapacity": MAX_VISITS_PER_DAY * len(WORK_DAYS),
         "maxPoints": MAX_POINTS_PER_AGENT,
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
         "maxDays": MAX_VISIT_DAYS,
+        "maxDaysRegular": MAX_VISIT_DAYS_REGULAR,
     }
 
 
-async def check_attach_allowed(point_code: str, agent: str) -> dict:
+async def check_attach_allowed(point_code: str, agent: str,
+                               ignore_agent: str = "") -> dict:
     """
     Можно ли агенту прикрепиться к этой точке.
 
-    Четыре правила:
+    ignore_agent — агент, которого на этой точке как бы нет. Нужен при
+    передаче: принимающего проверяем так, будто отдающий уже снят, иначе
+    он сам себя и заблокирует правилом «один агент бренда на точке».
+
+    Правила:
       1. Точка занята другим агентом того же бренда — прикрепление запрещено
-         (OR0104 блокирует OR0111, но не UL1111).
-      2. У самого агента на точке не больше MAX_VISIT_DAYS дней суммарно.
-         Если уже занято два дня, третий добавить можно, четвёртый — нет.
-      3. Не больше MAX_POINTS_PER_AGENT точек на агента. Правило касается
-         только НОВЫХ для агента точек: добавить день на точку, которая у
-         него уже есть, можно и на лимите — число точек от этого не растёт.
+         (OR0104 блокирует OR0111, но не UL1111). На сетевой точке разрешено.
+      2. Сколько дней можно занять на точке, зависит от неё самой:
+         ТОП-точка — до MAX_VISIT_DAYS, обычная — ровно один день.
+         Обычный ритейл объезжают раз в неделю, и лишние дни приводили
+         к заказам вне маршрута.
+      3. Не больше MAX_POINTS_PER_AGENT точек на агента, счёт по уникальным
+         ИНН. Правило касается только НОВЫХ для агента точек: добавить день
+         на точку, которая у него уже есть, можно и на лимите — число точек
+         от этого не растёт.
       4. Не больше MAX_VISITS_PER_DAY визитов в один день недели.
          Переполненные дни не запрещают прикрепление целиком — они просто
          исчезают из выбора (fullDays). Запрет только если свободных
@@ -1014,8 +1378,10 @@ async def check_attach_allowed(point_code: str, agent: str) -> dict:
       blockedBy       — логин агента, занявшего точку (для reason='brand')
       myDays          — дни, которые агент уже занял на этой точке
       remaining       — сколько дней ещё можно выбрать
-      fullDays        — дни, где у агента уже 30 визитов (выбирать нельзя)
+      fullDays        — дни, где у агента уже лимит визитов (выбирать нельзя)
       freeDays        — дни, которые реально доступны к выбору
+      isTop           — ТОП ли эта точка
+      maxDaysHere     — сколько дней разрешено именно на этой точке
       pointCount      — сколько точек у агента сейчас
       maxPoints       — лимит точек
       maxVisitsPerDay — лимит визитов в день
@@ -1033,11 +1399,37 @@ async def check_attach_allowed(point_code: str, agent: str) -> dict:
                 """,
                 point_code,
             )
-            # На сетевой точке несколько агентов одного бренда — норма
-            point_type = await conn.fetchval(
-                "SELECT COALESCE(type, 'def') FROM client_base WHERE point_code = $1",
+            # На сетевой точке несколько агентов одного бренда — норма,
+            # а ТОП определяет, сколько дней можно занять
+            info = await conn.fetchrow(
+                """
+                SELECT COALESCE(type, 'def')    AS type,
+                       COALESCE(is_top, false)  AS is_top,
+                       NULLIF(inn, '')          AS inn
+                  FROM client_base WHERE point_code = $1
+                """,
                 point_code,
             )
+
+            # Дни, которые агент уже занял на ЭТОЙ ЖЕ физической точке —
+            # то есть на любом коде контрагента с тем же ИНН. Иначе агент
+            # взял бы код KALINA на понедельник, код NIVEA того же магазина
+            # на вторник и приезжал бы туда дважды в неделю, обойдя правило.
+            inn = info["inn"] if info else None
+            sibling_days = []
+            if inn:
+                sibling_days = await conn.fetch(
+                    """
+                    SELECT DISTINCT a.visit_day
+                      FROM attachments a
+                      JOIN client_base c ON c.point_code = a.point_code
+                     WHERE upper(a.agent) = $1
+                       AND NULLIF(c.inn, '') = $2
+                       AND a.point_code <> $3
+                       AND a.visit_day IS NOT NULL AND a.visit_day <> ''
+                    """,
+                    (agent or "").upper(), inn, point_code,
+                )
     except Exception as e:
         return _db_error(e)
 
@@ -1045,25 +1437,38 @@ async def check_attach_allowed(point_code: str, agent: str) -> dict:
     if not load.get("success"):
         return load
 
+    is_top = bool(info["is_top"]) if info else False
+    max_days_here = max_days_for(is_top)
+
     limits = {
         "pointCount": load["pointCount"],
         "maxPoints": MAX_POINTS_PER_AGENT,
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
-        "maxDays": MAX_VISIT_DAYS,
+        "maxDays": max_days_here,
+        "maxDaysHere": max_days_here,
+        "isTop": is_top,
         "dayLoad": load["dayLoad"],
         "fullDays": load["fullDays"],
     }
 
-    is_chain = point_type == "chain"
+    is_chain = (info["type"] if info else "def") == "chain"
+
+    ignore = (ignore_agent or "").strip().upper()
 
     my_days, other_agent = [], None
     for r in rows:
         row_agent = (r["agent"] or "").upper()
+        if row_agent == ignore:
+            # Этого агента с точки снимают прямо сейчас — он не помеха
+            continue
         if row_agent == (agent or "").upper():
             my_days.extend(split_days(r["visit_day"]))
         elif agent_brand(row_agent) == brand and brand and not is_chain:
             # Точку уже занял коллега по бренду (на сетевой это разрешено)
             other_agent = other_agent or row_agent
+
+    # Дни на других кодах того же ИНН — это те же поездки на ту же точку
+    my_days.extend(d["visit_day"].strip() for d in sibling_days if d["visit_day"])
 
     # Один и тот же день мог попасть в две записи — считаем уникальные
     my_days = list(dict.fromkeys(my_days))
@@ -1078,13 +1483,16 @@ async def check_attach_allowed(point_code: str, agent: str) -> dict:
     if other_agent:
         return answer(False, "brand", blockedBy=other_agent)
 
-    # Правило 3. Точка новая для агента? Тогда она увеличит их число
+    # Правило 3. Точка новая для агента? Тогда она увеличит их число.
+    # «Новая» — значит у агента нет ни одного дня на этом ИНН: другой код
+    # того же магазина места в лимите не добавит, оно уже занято.
     is_new_point = not my_days
     if is_new_point and load["pointCount"] >= MAX_POINTS_PER_AGENT:
         return answer(False, "points")
 
-    remaining = MAX_VISIT_DAYS - len(my_days)
+    remaining = max_days_here - len(my_days)
     if remaining <= 0:
+        # На обычной точке это значит «день уже есть», на ТОП — «занято три»
         return answer(False, "limit")
 
     # Правило 4. Дни, где агент уже выбрал норму визитов, недоступны
@@ -1198,10 +1606,13 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
                 "message": f"В {', '.join(overloaded)} у вас уже {MAX_VISITS_PER_DAY} визитов — "
                            f"это предел на один день. Выберите другой день."}
 
+    max_here = check.get("maxDaysHere", MAX_VISIT_DAYS)
     if len(days) > remaining:
+        limit_text = (f"не больше {max_here} дней" if max_here > 1
+                      else "ровно один день в неделю")
         return {"success": False,
                 "message": f"Можно выбрать ещё {remaining}, а выбрано {len(days)}. "
-                           f"Всего на одну точку — не больше {MAX_VISIT_DAYS} дней."}
+                           f"На эту точку — {limit_text}."}
 
     try:
         pool = await get_pool()
@@ -1289,9 +1700,16 @@ def attach_denied_text(check: dict) -> str:
         return (f"Во всех рабочих днях у вас уже по {MAX_VISITS_PER_DAY} визитов — "
                 f"это предел на один день. Свободных дней не осталось.")
 
-    # reason == 'limit'
-    return (f"У вас уже {MAX_VISIT_DAYS} дня в этой точке: "
-            f"{', '.join(check.get('myDays', []))}")
+    # reason == 'limit' — дни на точке кончились. Причина разная:
+    # обычную точку посещают раз в неделю, ТОП — до трёх раз
+    days = ", ".join(check.get("myDays", []))
+    if not check.get("isTop"):
+        return (f"Эта точка уже закреплена за вами на {days}. "
+                f"Обычная торговая точка закрепляется на один день в неделю — "
+                f"территорию обходят раз в неделю. Три дня бывают только "
+                f"у ТОП-точек, отметить такую может супервайзер.")
+
+    return f"У вас уже {MAX_VISIT_DAYS} дня в этой ТОП-точке: {days}"
 
 
 # ======================================================================

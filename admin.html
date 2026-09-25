@@ -141,6 +141,7 @@
   .badge.passive { background: #FBEAE8; color: var(--red); }
   .badge.problem { background: #FBEAE8; color: var(--red); }
   .badge.chain   { background: #E6F7F4; color: #0A7A6B; }
+  .badge.top     { background: #FFF2D9; color: #8A5A00; }
 
   /* Проблемная точка: слегка красная подложка и красная рамка */
   .card.problem {
@@ -175,6 +176,30 @@
   .day-pick input { margin: 0; }
   .day-pick.keep { border-color: #C8EFE8; background: #F2FBF9; }
 
+  /* Норма дней у точки — первое, что должно быть видно в окне разбора:
+     из-за неё обычная точка с тремя днями и считается проблемой */
+  .norm {
+    background: #F2F5FA; border-radius: 9px; padding: 9px 12px;
+    font-size: 13px; color: #5A6478; margin-bottom: 14px; font-weight: 600;
+  }
+  .norm.top { background: #FFF6E6; color: #8A5A00; }
+  .norm-head {
+    font-size: 11px; font-weight: 700; letter-spacing: .6px;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 9px;
+  }
+
+  /* Кандидат на передачу точки */
+  .cand {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 11px 13px; margin-bottom: 8px; cursor: pointer;
+    font-family: inherit; font-size: inherit; text-align: left;
+  }
+  .cand:hover { border-color: var(--navy); }
+  .cand:active { transform: scale(.995); }
+  .cand.off { opacity: .55; cursor: default; background: #F7F9FC; }
+  .cand.off:hover { border-color: var(--line); }
+
   /* ---------- правила нагрузки ---------- */
   /* Правила висят над поиском, у самих точек агента: именно здесь
      супервайзер решает, что откреплять, и цифра «сейчас 221 из 150»
@@ -195,6 +220,7 @@
   }
   .rule-name { color: var(--text); }
   .rule-name b { font-weight: 700; }
+  .rule-hint { color: var(--muted); font-size: 12px; }
   .rule-fact { font-weight: 700; font-size: 13px; color: var(--mint); white-space: nowrap; }
   .rule-fact.over { color: var(--red); }
   .bar {
@@ -515,7 +541,8 @@
 
         <div class="rule">
           <div class="rule-top">
-            <span class="rule-name">Не больше <b>150</b> торговых точек на агента</span>
+            <span class="rule-name">Не больше <b id="rule-max-points">150</b> торговых точек
+              <span class="rule-hint">(по ИНН)</span></span>
             <span class="rule-fact" id="rule-points-fact">—</span>
           </div>
           <div class="bar"><i id="rule-points-bar" style="width:0"></i></div>
@@ -523,10 +550,18 @@
 
         <div class="rule">
           <div class="rule-top">
-            <span class="rule-name">Не больше <b>30</b> визитов в один день</span>
+            <span class="rule-name">Не больше <b id="rule-max-day">36</b> визитов в один день
+              <span class="rule-hint">(<b id="rule-week-cap">180</b> в неделю)</span></span>
             <span class="rule-fact" id="rule-days-fact">—</span>
           </div>
           <div class="day-load" id="rule-day-load"></div>
+        </div>
+
+        <div class="rule">
+          <div class="rule-top">
+            <span class="rule-name">Три дня — только у ТОП-точек, обычная — <b>один</b> день</span>
+            <span class="rule-fact" id="rule-top-fact">—</span>
+          </div>
         </div>
       </div>
 
@@ -615,6 +650,21 @@
 
     <div class="modal-actions">
       <button class="btn ghost" id="fix-close">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div id="transfer-overlay" class="overlay">
+  <div class="modal" style="max-width:440px; max-height:88vh; overflow-y:auto;">
+    <h2>Передать точку</h2>
+    <div class="who" id="transfer-point">—</div>
+
+    <div id="transfer-msg" class="msg"></div>
+    <div id="transfer-body"></div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="transfer-cancel">Отмена</button>
+      <button class="btn" id="transfer-save" disabled>Передать</button>
     </div>
   </div>
 </div>
@@ -1053,6 +1103,13 @@ function renderRules(r) {
   const maxDay = r.maxVisitsPerDay || 30;
   const count = r.pointCount || 0;
 
+  // Числа берём из ответа, а не из вёрстки: лимиты задаются на сервере,
+  // и страница не должна знать их наизусть
+  document.getElementById("rule-max-points").textContent = maxPoints;
+  document.getElementById("rule-max-day").textContent = maxDay;
+  document.getElementById("rule-week-cap").textContent =
+    r.weekCapacity || maxDay * (r.workDays || []).length;
+
   const fact = document.getElementById("rule-points-fact");
   const over = count > maxPoints;
   fact.textContent = over
@@ -1069,10 +1126,12 @@ function renderRules(r) {
   const overDays = days.filter(d => (load[d] || 0) > maxDay);
 
   const daysFact = document.getElementById("rule-days-fact");
+  const week = r.weekVisits || 0;
+  const cap = r.weekCapacity || maxDay * days.length;
   daysFact.textContent = overDays.length
-    ? `перегружено ${overDays.length} ${plural(overDays.length, "день", "дня", "дней")}`
-    : "в норме";
-  daysFact.className = "rule-fact" + (overDays.length ? " over" : "");
+    ? `${week} визитов из ${cap}`
+    : `${week} из ${cap} — в норме`;
+  daysFact.className = "rule-fact" + (week > cap ? " over" : "");
 
   document.getElementById("rule-day-load").innerHTML = days.map(full => {
     const n = load[full] || 0;
@@ -1080,6 +1139,15 @@ function renderRules(r) {
     const cls = n > maxDay ? "over" : (n === maxDay ? "full" : "");
     return `<span class="${cls}">${short} ${n}</span>`;
   }).join("");
+
+  // Сколько ТОП-точек: три дня можно занять только на них, и запас
+  // недели ограничивает их число
+  const top = r.topCount || 0;
+  const topFact = document.getElementById("rule-top-fact");
+  topFact.textContent = top
+    ? `${top} ${plural(top, "ТОП-точка", "ТОП-точки", "ТОП-точек")}`
+    : "ТОП-точек нет";
+  topFact.className = "rule-fact";
 }
 
 // ---------------- ВКЛАДКИ ОПЕРАТОРА И АДМИНА ----------------
@@ -1384,23 +1452,32 @@ function renderPoints(points) {
     return;
   }
 
+  // Открывается ЛЮБАЯ карточка, не только проблемная: разгрузка агента
+  // со 193 точками до 150 — это снятие и передача обычных, беспроблемных
+  // точек, и раньше за них было не взяться.
   list.innerHTML = points.map(p => {
     const bad = p.problems && p.problems.length;
+    const maxHere = p.maxDaysHere || (p.isTop ? 3 : 1);
     const labels = (p.problems || []).map(x =>
-      x === "days" ? `${p.dayCount} дней вместо 3` : "два агента одного бренда");
+      x === "days"
+        ? (maxHere === 1
+            ? `${p.dayCount} ${plural(p.dayCount, "день", "дня", "дней")} вместо одного`
+            : `${p.dayCount} ${plural(p.dayCount, "день", "дня", "дней")} вместо ${maxHere}`)
+        : "два агента одного бренда");
     return `
-    <div class="card ${bad ? "problem" : "static"}"
-         ${bad ? `data-point="${p.pointCode}" role="button" tabindex="0"` : ""}>
+    <div class="card ${bad ? "problem" : ""}"
+         data-point="${p.pointCode}" role="button" tabindex="0">
       <div class="grow">
         ${bad ? `<div class="problem-title">⚠ ${labels.join(" · ")}</div>` : ""}
         <div class="name">${p.pointName}
+          ${p.isTop ? '<span class="badge top">ТОП</span>' : ""}
           ${p.status === 1 ? '<span class="badge passive">пассивная</span>' : ""}
           ${p.type === "chain" ? '<span class="badge chain">сетевая</span>' : ""}
         </div>
         <div class="meta">${p.pointCode}${p.inn ? " · ИНН " + p.inn : ""}</div>
         ${dayStrip(p.days)}
       </div>
-      ${bad ? '<div class="chev">›</div>' : ""}
+      <div class="chev">›</div>
     </div>`;
   }).join("");
 
@@ -1413,6 +1490,9 @@ function renderPoints(points) {
 // ---------------- РАЗБОР ПРОБЛЕМНОЙ ТОЧКИ ----------------
 const fixOverlay = document.getElementById("fix-overlay");
 let fixPoint = "";
+// Разбор открытой точки целиком: из него окно передачи берёт название,
+// рабочие дни и норму, не запрашивая их второй раз
+let fixDetails = null;
 
 document.getElementById("fix-close").addEventListener("click", closeFix);
 fixOverlay.addEventListener("click", e => { if (e.target === fixOverlay) closeFix(); });
@@ -1431,10 +1511,13 @@ function fixMessage(text, ok) {
   if (ok) { msg.style.background = "#E6F7F4"; msg.style.color = "#0A7A6B"; }
 }
 
-async function openFix(pointCode) {
+// keep — текст, который нужно оставить на виду после перезагрузки окна.
+// Без него сообщение «Точка отмечена как ТОП» гасло мгновенно: обработчик
+// показывал его и тут же вызывал openFix, а тот очищал строку.
+async function openFix(pointCode, keep) {
   fixPoint = pointCode;
   document.getElementById("fix-body").innerHTML = '<div class="loading">Загружаю...</div>';
-  fixMessage("", true);
+  fixMessage(keep || "", true);
   fixOverlay.classList.add("active");
 
   const r = await call("panel_point_details",
@@ -1449,6 +1532,8 @@ async function openFix(pointCode) {
   document.getElementById("fix-point").textContent =
     r.pointName + " · " + r.pointCode + (r.inn ? " · ИНН " + r.inn : "");
 
+  fixDetails = r;
+
   const hasDays  = r.problems.includes("days");
   const hasBrand = r.problems.includes("brand");
   document.getElementById("fix-title").textContent =
@@ -1456,8 +1541,16 @@ async function openFix(pointCode) {
 
   let html = "";
 
+  // Норма дней у этой точки. Показываем всегда: именно из-за неё
+  // обычная точка с тремя днями считается проблемой
+  html += `<div class="norm ${r.isTop ? "top" : ""}">
+             ${r.isTop
+               ? `⭐️ ТОП-точка — до ${r.maxDaysTop} дней визита`
+               : "Обычная точка — один день визита в неделю"}
+           </div>`;
+
   if (hasDays) {
-    // Проблема 1: у агента больше трёх дней — предлагаем снять лишние
+    // Проблема 1: дней больше нормы — предлагаем снять лишние
     // Только открытый агент: чужие дни правит его собственный супервайзер
     const over = r.overDaysAgents || [];
     over.forEach(a => {
@@ -1500,8 +1593,33 @@ async function openFix(pointCode) {
              </p>`;
   }
 
-  if (!hasDays && !hasBrand) {
-    html = '<div class="empty">Проблем на этой точке больше нет.</div>';
+  // ---- Разгрузка: доступна на ЛЮБОЙ точке, а не только на проблемной ----
+  // Ради этого блока окно и открывается теперь везде: чтобы снять агента
+  // со 193 точек до 150, надо работать с обычными точками.
+  const mine = (r.agents || []).find(a => a.agent === currentAgent);
+  if (mine) {
+    if (hasDays || hasBrand) {
+      html += '<hr style="border:none; border-top:1px solid #E3E9F2; margin:18px 0;">';
+    }
+    html += `
+      <div class="norm-head">Разгрузка агента ${currentAgent}</div>
+      <p style="margin:0 0 10px; font-size:13.5px; color:#5A6478;">
+        Сейчас на точке: <b>${mine.days || "нет дней"}</b>
+      </p>
+      <button class="btn" id="fix-transfer" style="width:100%; margin-bottom:9px;">
+        ↗ Передать другому агенту
+      </button>
+      <button class="btn-danger" id="fix-drop" style="width:100%; padding:11px; margin-bottom:9px;">
+        Снять точку с ${currentAgent}
+      </button>
+      <button class="btn ghost" id="fix-top" style="width:100%;">
+        ${r.isTop ? "Снять отметку ТОП" : "⭐️ Отметить как ТОП-точку"}
+      </button>
+      <p style="margin:8px 0 0; font-size:12px; color:#6B7688;">
+        ${r.isTop
+          ? "Без отметки ТОП точке положен один день визита в неделю."
+          : `ТОП-точке разрешено до ${r.maxDaysTop} дней визита вместо одного.`}
+      </p>`;
   }
 
   body.innerHTML = html;
@@ -1519,8 +1637,7 @@ async function openFix(pointCode) {
                              { agent: agent, pointCode: fixPoint, days: days }).catch(() => null);
       btn.disabled = false;
       if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
-      fixMessage(res.message, true);
-      openFix(fixPoint);
+      openFix(fixPoint, res.message);
     });
   });
 
@@ -1534,8 +1651,7 @@ async function openFix(pointCode) {
                              { agent: agent, pointCode: fixPoint }).catch(() => null);
       btn.disabled = false;
       if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
-      fixMessage(res.message, true);
-      openFix(fixPoint);
+      openFix(fixPoint, res.message);
     });
   });
 
@@ -1547,11 +1663,202 @@ async function openFix(pointCode) {
                              { pointCode: fixPoint, type: "chain" }).catch(() => null);
       chainBtn.disabled = false;
       if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
-      fixMessage(res.message, true);
-      openFix(fixPoint);
+      openFix(fixPoint, res.message);
     });
   }
+
+  const topBtn = document.getElementById("fix-top");
+  if (topBtn) {
+    topBtn.addEventListener("click", async () => {
+      topBtn.disabled = true;
+      const res = await call("panel_set_point_top",
+                             { pointCode: fixPoint, isTop: !r.isTop }).catch(() => null);
+      topBtn.disabled = false;
+      if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
+      openFix(fixPoint, res.message);
+    });
+  }
+
+  const dropBtn = document.getElementById("fix-drop");
+  if (dropBtn) {
+    dropBtn.addEventListener("click", async () => {
+      if (!confirm(`Снять точку с ${currentAgent}?\n\nОна останется без агента, ` +
+                   `и визитов туда больше не будет. Если точку нужно сохранить ` +
+                   `в маршрутах — выберите «Передать другому агенту».`)) return;
+
+      dropBtn.disabled = true;
+      const res = await call("panel_unattach_agent",
+                             { agent: currentAgent, pointCode: fixPoint }).catch(() => null);
+      dropBtn.disabled = false;
+      if (!res || !res.success) return fixMessage(res ? res.message : "Сервер не отвечает", false);
+      closeFix();
+    });
+  }
+
+  const transferBtn = document.getElementById("fix-transfer");
+  if (transferBtn) {
+    transferBtn.addEventListener("click", () => openTransfer(r));
+  }
 }
+
+// ---------------- ПЕРЕДАЧА ТОЧКИ ----------------
+// Открепить точку «в никуда» — значит выкинуть клиента из маршрутов.
+// Поэтому основной путь разгрузки — передача агенту с запасом.
+const transferOverlay = document.getElementById("transfer-overlay");
+let transferTo = "";
+let transferDays = [];
+
+document.getElementById("transfer-cancel").addEventListener("click", closeTransfer);
+transferOverlay.addEventListener("click", e => {
+  if (e.target === transferOverlay) closeTransfer();
+});
+
+function closeTransfer() {
+  transferOverlay.classList.remove("active");
+  transferTo = "";
+  transferDays = [];
+}
+
+function transferMessage(text, ok) {
+  const msg = document.getElementById("transfer-msg");
+  msg.className = "msg " + (ok ? "" : "error");
+  msg.textContent = text;
+  msg.style.display = text ? "block" : "none";
+  if (ok) { msg.style.background = "#E6F7F4"; msg.style.color = "#0A7A6B"; }
+}
+
+async function openTransfer(details) {
+  transferTo = "";
+  transferDays = [];
+  transferMessage("", true);
+  document.getElementById("transfer-point").textContent =
+    details.pointName + " · " + details.pointCode;
+  document.getElementById("transfer-body").innerHTML =
+    '<div class="loading">Ищу, кому можно передать...</div>';
+  document.getElementById("transfer-save").disabled = true;
+  transferOverlay.classList.add("active");
+
+  const r = await call("panel_transfer_candidates",
+                       { agent: currentAgent, pointCode: fixPoint }).catch(() => null);
+  const body = document.getElementById("transfer-body");
+
+  if (!r || !r.success) {
+    body.innerHTML = `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+
+  const list = r.candidates || [];
+  if (!list.length) {
+    body.innerHTML = `<div class="empty">Других агентов бренда ${r.brand}
+      в вашем подчинении нет.<br>Передать точку некому.</div>`;
+    return;
+  }
+
+  // Сначала те, кто может взять. Занятые показываем тоже — иначе
+  // непонятно, почему в списке пусто, и супервайзер будет искать ошибку
+  body.innerHTML = list.map(c => `
+    <button class="cand ${c.canTake ? "" : "off"}" data-cand="${c.agent}"
+            ${c.canTake ? "" : "disabled"}>
+      <div class="grow">
+        <div class="name">${c.agent}</div>
+        <div class="meta">
+          ${c.pointCount} ${plural(c.pointCount, "точка", "точки", "точек")} ·
+          ${c.canTake
+            ? `свободно ${c.freePoints} ${plural(c.freePoints, "место", "места", "мест")}`
+            : candReason(c, r)}
+        </div>
+      </div>
+      ${c.canTake ? '<div class="chev">›</div>' : ""}
+    </button>`).join("");
+
+  body.querySelectorAll("[data-cand]").forEach(el => {
+    el.addEventListener("click", () => pickCandidate(el.dataset.cand, list, details));
+  });
+}
+
+function candReason(c, r) {
+  if (c.reason === "points") return `лимит ${r.maxPoints} точек выбран`;
+  if (c.reason === "day_limit") return `все дни по ${r.maxVisitsPerDay} визитов`;
+  if (c.reason === "brand") return "уже стоит на этой точке";
+  if (c.reason === "limit") return "точка уже закреплена за ним";
+  return "взять не может";
+}
+
+// Второй шаг: выбор дней визита у принимающего агента. Его маршрут
+// свой, и дни отдающего могут ему не подойти.
+function pickCandidate(agent, list, details) {
+  const c = list.find(x => x.agent === agent);
+  if (!c) return;
+
+  transferTo = agent;
+  transferDays = [];
+
+  const maxHere = c.maxDaysHere || 1;
+  document.getElementById("transfer-body").innerHTML = `
+    <button class="back" id="transfer-back">← Другой агент</button>
+    <div class="norm-head">${agent}</div>
+    <p style="margin:0 0 10px; font-size:13.5px; color:#5A6478;">
+      ${maxHere > 1
+        ? `ТОП-точка — можно выбрать до ${maxHere} дней.`
+        : "Обычная точка — выберите один день визита."}
+      Дни, где у него уже норма визитов, в списке не показаны.
+    </p>
+    <div id="transfer-days">
+      ${(c.freeDays || []).map(d => `
+        <label class="day-pick">
+          <input type="${maxHere > 1 ? "checkbox" : "radio"}" name="tday" value="${d}"> ${d}
+        </label>`).join("")}
+    </div>
+    <div class="day-load" style="margin-top:10px;">
+      ${(details.workDays || []).map(d => {
+        const n = (c.dayLoad || {})[d] || 0;
+        const short = (DAYS.find(x => x[1] === d) || [d.slice(0, 2)])[0];
+        const full = (c.fullDays || []).includes(d);
+        return `<span class="${full ? "over" : ""}">${short} ${n}</span>`;
+      }).join("")}
+    </div>`;
+
+  document.getElementById("transfer-back")
+    .addEventListener("click", () => openTransfer(details));
+
+  const box = document.getElementById("transfer-days");
+  box.addEventListener("change", () => {
+    transferDays = [...box.querySelectorAll("input:checked")].map(i => i.value);
+    if (transferDays.length > maxHere) {
+      transferMessage(`Можно выбрать не больше ${maxHere}`, false);
+    } else {
+      transferMessage("", true);
+    }
+    document.getElementById("transfer-save").disabled =
+      !transferDays.length || transferDays.length > maxHere;
+  });
+
+  document.getElementById("transfer-save").disabled = true;
+}
+
+document.getElementById("transfer-save").addEventListener("click", async () => {
+  if (!transferTo || !transferDays.length) return;
+
+  const btn = document.getElementById("transfer-save");
+  btn.disabled = true;
+  btn.textContent = "Передаю...";
+
+  const res = await call("panel_transfer_point", {
+    pointCode: fixPoint, fromAgent: currentAgent,
+    toAgent: transferTo, days: transferDays,
+  }).catch(() => null);
+
+  btn.textContent = "Передать";
+
+  if (!res || !res.success) {
+    btn.disabled = false;
+    return transferMessage(res ? res.message : "Сервер не отвечает", false);
+  }
+
+  // Точка ушла — и окно разбора, и список точек агента устарели
+  closeTransfer();
+  closeFix();
+});
 
 // Поиск по точкам агента: у некоторых их сотни, листать бессмысленно
 let pointTimer = null;

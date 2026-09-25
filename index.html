@@ -1360,7 +1360,7 @@
     // Дни, уже занятые этим агентом на выбранной точке
     let attachTakenDays = [];
 
-    // Дни, где у агента уже 30 визитов по всем точкам. Это другая причина
+    // Дни, где у агента уже норма визитов по всем точкам. Это другая причина
     // отказа, чем «занят вами», и подпись в списке должна отличаться —
     // иначе агент не поймёт, почему день недоступен на новой точке.
     let attachFullDays = [];
@@ -1390,7 +1390,7 @@
                 const usedElsewhere = opt.value !== select.value && chosen.includes(opt.value);
 
                 opt.disabled = isFull || isTaken || usedElsewhere;
-                opt.textContent = isFull ? opt.value + ' — заполнен (30 визитов)'
+                opt.textContent = isFull ? opt.value + ' — заполнен по норме визитов'
                                 : isTaken ? opt.value + ' — уже занят вами'
                                 : opt.value;
             });
@@ -1414,6 +1414,10 @@
         // тоже визит, иначе правило обходилось бы через добавление ТТ
         const fullFor = () => (limited ? attachFullDays : addFullDays);
 
+        // Сколько полей дней показывать. Новая точка всегда обычная —
+        // ТОП её отметит супервайзер позже, поэтому здесь ровно один день.
+        const remainingFor = () => (limited ? attachRemaining : 1);
+
         [day1, day2, day3].forEach(sel => {
             sel.addEventListener('change',
                 () => refreshDayOptions(allIds, takenFor(), fullFor()));
@@ -1421,7 +1425,7 @@
 
         day1.addEventListener('change', function() {
             if (this.value) {
-                if (!limited || attachRemaining >= 2) day2Group.style.display = 'block';
+                if (remainingFor() >= 2) day2Group.style.display = 'block';
             } else {
                 day2Group.style.display = 'none';
                 day3Group.style.display = 'none';
@@ -1432,7 +1436,7 @@
 
         day2.addEventListener('change', function() {
             if (this.value) {
-                if (!limited || attachRemaining >= 3) day3Group.style.display = 'block';
+                if (remainingFor() >= 3) day3Group.style.display = 'block';
             } else {
                 day3Group.style.display = 'none';
                 day3.value = '';
@@ -1693,7 +1697,8 @@
             ` · визитов ${r.today ? 'сегодня' : 'в текущий день'}: ` +
             `<b class="${todayLoad > r.maxVisitsPerDay ? 'over' : ''}">${todayLoad}</b> из ${r.maxVisitsPerDay}` +
             `<br>Правила: не больше ${r.maxPoints} торговых точек на агента и ` +
-            `${r.maxVisitsPerDay} визитов в один день.`;
+            `${r.maxVisitsPerDay} визитов в один день. ` +
+            `Обычная точка закрепляется на один день в неделю, ТОП-точка — до трёх.`;
 
         if (!list.length) {
             box.innerHTML = isAll
@@ -1742,7 +1747,7 @@
         const note = document.getElementById('add-note');
         if (note) {
             if (addFullDays.length) {
-                note.textContent = 'Заполнены по 30 визитов: ' + addFullDays.join(', ') +
+                note.textContent = 'Заполнены по норме визитов: ' + addFullDays.join(', ') +
                                    ' — эти дни выбрать нельзя.';
                 note.style.display = 'block';
             } else {
@@ -2391,11 +2396,19 @@
                             point.pointName,
                             "Свободных дней визита не осталось. " +
                             "Разгрузить день может супервайзер.");
-            } else {
-                showBlocked("У вас уже 3 дня в этой точке",
+            } else if (check.isTop) {
+                showBlocked("У вас уже " + check.maxDaysHere + " дня в этой ТОП-точке",
                             point.pointName,
                             "Ваши дни: " + (check.myDays || []).join(', ') +
                             ". Больше дней добавить нельзя.");
+            } else {
+                showBlocked("Эта точка уже закреплена за вами",
+                            point.pointName,
+                            "День визита: " + (check.myDays || []).join(', ') +
+                            ". Обычная торговая точка закрепляется на один день " +
+                            "в неделю — территорию обходят раз в неделю. " +
+                            "Три дня бывают только у ТОП-точек, отметить такую " +
+                            "может супервайзер.");
             }
             showScreen('screen-inn-check');
             return;
@@ -2403,15 +2416,16 @@
 
         document.getElementById('attachPointName').value = point.pointName;
         document.getElementById('attachPointCode').value = point.pointCode;
-        applyTakenDays(check.myDays || [], check.remaining, check.fullDays || []);
+        applyTakenDays(check.myDays || [], check.remaining, check.fullDays || [],
+                       check.isTop, check.maxDaysHere);
         showScreen('screen-attach');
     }
 
-    function applyTakenDays(taken, remaining, full) {
+    function applyTakenDays(taken, remaining, full, isTop, maxHere) {
         // Дни, уже занятые этим агентом на этой точке, выбирать нельзя:
         // иначе агент занял бы один день дважды и упёрся в лимит зря.
-        // Переполненные дни (30 визитов) убираются по той же причине —
-        // сервер их всё равно не примет.
+        // Переполненные дни убираются по той же причине — сервер их
+        // всё равно не примет.
         attachTakenDays = (taken || []).concat(full || []);
         attachFullDays = full || [];
 
@@ -2440,21 +2454,22 @@
 
         const note = document.getElementById('attach-note');
         if (note) {
-            const parts = [];
+            // Норму пишем всегда: один день на обычной точке — новое
+            // правило, и без объяснения оно выглядит поломкой формы
+            const parts = [isTop
+                ? '⭐️ ТОП-точка — можно выбрать до ' + (maxHere || 3) + ' дней.'
+                : 'Обычная точка — ровно один день визита в неделю.'];
+
             if (taken.length) {
                 parts.push('У вас уже занято: ' + taken.join(', ') +
                            '. Можно выбрать ещё ' + remaining + '.');
             }
             if (attachFullDays.length) {
-                parts.push('Заполнены по 30 визитов: ' + attachFullDays.join(', ') +
-                           ' — эти дни выбрать нельзя.');
+                parts.push('Дни ' + attachFullDays.join(', ') +
+                           ' заполнены по норме визитов — выбрать их нельзя.');
             }
-            if (parts.length) {
-                note.textContent = parts.join(' ');
-                note.style.display = 'block';
-            } else {
-                note.style.display = 'none';
-            }
+            note.textContent = parts.join(' ');
+            note.style.display = 'block';
         }
     }
 

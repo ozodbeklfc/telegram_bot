@@ -500,10 +500,18 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
             head = f"⛔️ ВСЕ ДНИ ЗАПОЛНЕНЫ ПО {api.MAX_VISITS_PER_DAY} ВИЗИТОВ"
             body = ("📅 Свободных дней не осталось.\n\n"
                     + day_load_text(check.get("dayLoad", {})))
-        else:  # reason == 'limit'
-            head = f"⛔️ У ВАС УЖЕ {api.MAX_VISIT_DAYS} ДНЯ В ЭТОЙ ТОЧКЕ"
+        elif check.get("isTop"):  # reason == 'limit' на ТОП-точке
+            head = f"⛔️ У ВАС УЖЕ {api.MAX_VISIT_DAYS} ДНЯ В ЭТОЙ ТОП-ТОЧКЕ"
             body = (f"📅 Ваши дни: {', '.join(check.get('myDays', []))}\n\n"
                     f"Больше дней добавить нельзя.")
+        else:  # reason == 'limit' на обычной точке
+            head = "⛔️ ЭТА ТОЧКА УЖЕ ЗАКРЕПЛЕНА ЗА ВАМИ"
+            body = (f"📅 День визита: {', '.join(check.get('myDays', []))}\n\n"
+                    f"Обычная торговая точка закрепляется на ОДИН день в неделю: "
+                    f"территорию обходят раз в неделю, и второй день приводит "
+                    f"к заказам вне маршрута.\n\n"
+                    f"Три дня бывают только у ТОП-точек — отметить такую "
+                    f"может супервайзер.")
 
         await message.answer(
             f"{head}\n\n🏪 {point['pointName']}\n{body}\n\nВведите другой ИНН:"
@@ -513,8 +521,10 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         return False
 
     taken = check.get("myDays", [])
-    remaining = check.get("remaining", 3)
+    remaining = check.get("remaining", 1)
     full = check.get("fullDays", [])
+    is_top = check.get("isTop", False)
+    max_here = check.get("maxDaysHere", remaining)
 
     await state.set_data({
         "agent": agent,
@@ -527,9 +537,13 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
     })
     await state.set_state(AttachStates.choosing_days)
 
-    note = ""
+    # Агент должен понимать, почему день один: иначе это выглядит поломкой
+    note = (f"\n\n⭐️ ТОП-точка — можно выбрать до {max_here} дней."
+            if is_top else
+            "\n\n📅 Обычная точка — ровно ОДИН день в неделю.")
+
     if taken:
-        note += (f"\n\n📅 У вас уже занято: {', '.join(taken)}\n"
+        note += (f"\n\nУ вас уже занято: {', '.join(taken)}\n"
                  f"Можно выбрать ещё {remaining}.")
     if full:
         note += (f"\n\n🚫 Заполнены по {api.MAX_VISITS_PER_DAY} визитов: "
@@ -538,7 +552,7 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
     await message.answer(
         f"{header}🏪 {point['pointName']}\n"
         f"🔢 Код: {point['pointCode']}{note}\n\n"
-        f"Выберите дни визита:",
+        f"Выберите {'дни' if max_here > 1 else 'день'} визита:",
         reply_markup=build_days_keyboard([], taken, full),
     )
     return True
@@ -846,7 +860,10 @@ async def add_delivery(callback: CallbackQuery, state: FSMContext):
     idx = int(callback.data.split(":")[1])
     delivery_list = data.get_delivery_codes(fsm_data.get("oblast", ""))
     delivery_code = delivery_list[idx]
-    await state.update_data(deliveryCode=delivery_code, visit_days=[])
+    # remaining_days задаём явно: состояние переносится между сценариями,
+    # и после ТОП-точки здесь осталась бы тройка от прошлого прикрепления
+    await state.update_data(deliveryCode=delivery_code, visit_days=[],
+                            taken_days=[], remaining_days=api.MAX_VISIT_DAYS_REGULAR)
 
     # Новая точка — это тоже визит, поэтому дневной лимит действует и здесь.
     # Иначе агент, упёршийся в 30 визитов, обходил бы правило через
@@ -863,7 +880,10 @@ async def add_delivery(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddStates.choosing_days)
     await callback.message.edit_text(
         f"Код доставщика: {delivery_code}\n\n"
-        f"1️⃣4️⃣ Выберите дни визита (можно до 3):{note}",
+        f"1️⃣4️⃣ Выберите день визита.\n"
+        f"Новая точка закрепляется на ОДИН день в неделю. Если она окажется "
+        f"ТОП-точкой, супервайзер отметит её, и дни можно будет добавить."
+        f"{note}",
         reply_markup=build_days_keyboard([], [], full),
     )
     await safe_answer(callback)
@@ -922,8 +942,9 @@ async def toggle_day(callback: CallbackQuery, state: FSMContext):
     selected = fsm_data.get("visit_days", [])
     taken = fsm_data.get("taken_days", [])
     full = fsm_data.get("full_days", [])
-    # В сценарии добавления новой точки ограничений нет — там всегда 3 дня
-    remaining = fsm_data.get("remaining_days", 3)
+    # Новая точка в базе ещё не заведена, ТОП её отметить некому — значит
+    # она обычная, и день у неё один
+    remaining = fsm_data.get("remaining_days", api.MAX_VISIT_DAYS_REGULAR)
 
     if day in taken:
         await safe_answer(callback, f"{day} — этот день у вас уже занят на этой точке",
@@ -943,13 +964,24 @@ async def toggle_day(callback: CallbackQuery, state: FSMContext):
     elif len(selected) < remaining:
         selected.append(day)
     else:
-        if remaining < 3:
+        if remaining == 1 and not taken:
+            # Самый частый случай после смены правил: обычная точка,
+            # и агент по привычке жмёт второй день
+            await safe_answer(
+                callback,
+                "Обычная торговая точка закрепляется на ОДИН день в неделю. "
+                "Снимите отметку с выбранного дня, если хотите другой. "
+                "Три дня бывают только у ТОП-точек.",
+                show_alert=True)
+        elif taken:
             await safe_answer(
                 callback,
                 f"Можно выбрать ещё {remaining} — остальные дни на этой точке уже ваши",
                 show_alert=True)
         else:
-            await safe_answer(callback, "Можно выбрать максимум 3 дня", show_alert=True)
+            await safe_answer(callback, f"Можно выбрать максимум {remaining} "
+                                        f"{'день' if remaining == 1 else 'дня'}",
+                              show_alert=True)
         return
 
     await state.update_data(visit_days=selected)
