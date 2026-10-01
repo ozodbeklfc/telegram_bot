@@ -101,6 +101,12 @@
     width: 100%; text-align: left; font-family: inherit; font-size: inherit;
     cursor: pointer; transition: border-color .12s, transform .12s;
   }
+  /* Карточки точек плотнее карточек агентов: их сотни, и каждый лишний
+     пиксель — это минус строка на экране */
+  #points-list .card { padding: 10px 12px; margin-bottom: 7px; }
+  #points-list .name { font-size: 14.5px; }
+  #points-list .meta { font-size: 12px; }
+  #points-list .days { margin-top: 5px; }
   .card:hover { border-color: var(--navy); }
   .card:active { transform: scale(.995); }
   .card:focus-visible { outline: 2px solid var(--navy); outline-offset: 2px; }
@@ -206,12 +212,39 @@
      должна быть перед глазами, а не в инструкции */
   .rules {
     background: #fff; border: 1px solid var(--line); border-radius: 12px;
-    padding: 12px 14px; margin-bottom: 14px;
+    margin-bottom: 10px; overflow: hidden;
   }
+  /* Шапка карточки — она же кнопка «свернуть». В свёрнутом виде это
+     единственное, что занимает место: агент, число точек и значки
+     перегруза. Остальное открывается по нажатию. */
   .rules-head {
-    font-size: 11px; font-weight: 700; letter-spacing: .6px;
-    text-transform: uppercase; color: var(--muted); margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    background: var(--navy); color: #fff; border: none;
+    /* Справа место под галочку: она выставлена абсолютно, иначе при
+       переносе значков уезжала бы за край */
+    padding: 10px 32px 10px 14px; cursor: pointer; font-family: inherit;
+    font-size: 14px; text-align: left; position: relative; flex-wrap: wrap;
   }
+  .rules-agent { font-weight: 700; font-size: 16px; letter-spacing: .3px; }
+  .rules-count { color: var(--ice); font-size: 13px; white-space: nowrap; }
+  .rules-count b { color: #fff; font-size: 14px; }
+  .rules-flags {
+    margin-left: auto; display: flex; gap: 5px;
+    flex-wrap: wrap; justify-content: flex-end;
+  }
+  .rules-flags span {
+    background: rgba(255,255,255,.16); border-radius: 20px;
+    padding: 2px 8px; font-size: 11px; font-weight: 700; white-space: nowrap;
+  }
+  .rules-flags span.bad { background: var(--red); }
+  .rules-chev {
+    position: absolute; right: 13px; top: 50%; margin-top: -8px;
+    transition: transform .2s ease; font-size: 13px; opacity: .8;
+  }
+  .rules[data-open="0"] .rules-chev { transform: rotate(180deg); }
+  .rules[data-open="0"] .rules-body { display: none; }
+  .rules-body { padding: 13px 14px; }
+
   .rule { margin-bottom: 11px; }
   .rule:last-child { margin-bottom: 0; }
   .rule-top {
@@ -230,6 +263,7 @@
   .bar i { display: block; height: 100%; background: var(--mint); border-radius: 3px; }
   .bar i.over { background: var(--red); }
 
+  /* Полоска дней в окне передачи — только показывает нагрузку */
   .day-load { display: flex; gap: 5px; margin-top: 7px; flex-wrap: wrap; }
   .day-load span {
     font-size: 11.5px; font-weight: 600; padding: 3px 7px; border-radius: 6px;
@@ -237,6 +271,43 @@
   }
   .day-load span.full { background: #E6F7F4; color: #0A7A6B; }
   .day-load span.over { background: #FBEAE8; color: var(--red); }
+
+  /* Те же дни на экране точек — уже кнопки фильтра */
+  .day-filter {
+    display: flex; gap: 6px; margin-bottom: 10px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    /* Полоса прокрутки под шестью днями на узком экране только мешает */
+    scrollbar-width: none;
+  }
+  .day-filter::-webkit-scrollbar { display: none; }
+  .day-filter button {
+    flex: 1 0 auto; min-width: 52px;
+    background: #fff; border: 1px solid var(--line); border-radius: 9px;
+    padding: 5px 6px 4px; cursor: pointer; font-family: inherit;
+    display: flex; flex-direction: column; align-items: center;
+    transition: border-color .12s, background-color .12s, transform .08s;
+  }
+  .day-filter button:active { transform: scale(.96); }
+  .day-filter .d { font-size: 11px; font-weight: 700; color: var(--muted); line-height: 1.3; }
+  .day-filter .n { font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.15; }
+  /* Перегруженный день видно и в роли кнопки: красная цифра */
+  .day-filter button.over .n { color: var(--red); }
+  .day-filter button.full .n { color: #0A7A6B; }
+  .day-filter button.on {
+    background: var(--navy); border-color: var(--navy);
+  }
+  .day-filter button.on .d { color: var(--ice); }
+  .day-filter button.on .n { color: #fff; }
+
+  .list-info {
+    font-size: 12.5px; color: var(--muted); padding: 0 2px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .list-info button {
+    background: none; border: none; color: var(--navy); cursor: pointer;
+    font-family: inherit; font-size: 12.5px; font-weight: 600;
+    padding: 0; text-decoration: underline;
+  }
 
   /* ---------- вкладки (оператор и админ) ---------- */
   .nav { display: flex; gap: 6px; margin-bottom: 14px; }
@@ -521,24 +592,22 @@
 <!-- ================= ТОЧКИ АГЕНТА ================= -->
 <div id="screen-points" class="hidden">
   <div class="wrap">
-    <div class="sticky" id="points-sticky">
-      <button class="back" id="back-btn">← Все агенты</button>
+    <!-- Шапка НЕ закреплена: она нужна при входе на экран, а дальше
+         только отнимает место у списка. Закреплён ниже только поиск
+         с фильтром дней — то, чем пользуются при прокрутке. -->
+    <button class="back" id="back-btn">← Все агенты</button>
 
-      <div class="summary">
-      <div>
-        <div class="n" id="point-agent">—</div>
-        <div class="l">агент</div>
-      </div>
-      <div>
-        <div class="n" id="point-count">0</div>
-        <div class="l">точек</div>
-      </div>
-      </div>
+    <!-- Сводка и правила в одной карточке. Складывается по шапке,
+         состояние запоминается: кто правила знает, держит их свёрнутыми. -->
+    <div class="rules" id="point-rules">
+      <button class="rules-head" id="rules-toggle" aria-expanded="true">
+        <span class="rules-agent" id="point-agent">—</span>
+        <span class="rules-count"><b id="point-count">0</b> точек</span>
+        <span class="rules-flags" id="rules-flags"></span>
+        <span class="rules-chev">⌃</span>
+      </button>
 
-      <!-- Правила нагрузки: цифры агента против установленных лимитов -->
-      <div class="rules" id="point-rules">
-        <div class="rules-head">Правила нагрузки</div>
-
+      <div class="rules-body" id="rules-body">
         <div class="rule">
           <div class="rule-top">
             <span class="rule-name">Не больше <b id="rule-max-points">150</b> торговых точек
@@ -554,7 +623,6 @@
               <span class="rule-hint">(<b id="rule-week-cap">180</b> в неделю)</span></span>
             <span class="rule-fact" id="rule-days-fact">—</span>
           </div>
-          <div class="day-load" id="rule-day-load"></div>
         </div>
 
         <div class="rule">
@@ -564,13 +632,21 @@
           </div>
         </div>
       </div>
+    </div>
 
+    <div class="sticky" id="points-sticky">
       <div class="search">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="7" cy="7" r="5"></circle><path d="M11 11l4 4"></path>
       </svg>
       <input type="text" id="point-search" placeholder="Поиск по названию, коду или ИНН" autocomplete="off">
       </div>
+
+      <!-- Дни — и показ нагрузки, и фильтр списка. Нажатие оставляет
+           только точки этого дня, повторное — снимает фильтр. -->
+      <div class="day-filter" id="rule-day-load"></div>
+
+      <div class="list-info" id="points-info"></div>
     </div>
 
     <div id="points-list"></div>
@@ -1074,15 +1150,34 @@ document.getElementById("agent-search").addEventListener("input", function () {
 // ---------------- ТОЧКИ АГЕНТА ----------------
 let currentAgent = "";
 
+// Последний ответ сервера по точкам агента. Фильтр по дню применяется
+// к нему на месте, без нового запроса: список уже в руках, и перерисовка
+// по нажатию дня должна быть мгновенной.
+let currentPoints = [];
+let dayFilter = "";
+
 async function openAgent(agent) {
+  // Фильтр дня сбрасываем, только когда открыли ДРУГОГО агента. Эта же
+  // функция вызывается после закрытия окна разбора, чтобы обновить список,
+  // и там сброс был бы помехой: супервайзер идёт по точкам понедельника
+  // одну за другой, и каждый возврат выкидывал бы его в полный список.
+  if (agent !== currentAgent) {
+    dayFilter = "";
+    document.getElementById("point-search").value = "";
+  }
   currentAgent = agent;
-  document.getElementById("point-search").value = "";
   document.getElementById("point-agent").textContent = agent;
   document.getElementById("point-count").textContent = "—";
   document.getElementById("points-list").innerHTML = '<div class="loading">Загружаю точки...</div>';
   show("screen-points");
 
-  const r = await call("panel_agent_points", { agent: agent, search: "" }).catch(() => null);
+  // Поиск передаём текущий: при обновлении после разбора точки поле
+  // остаётся заполненным, и запрос без него вернул бы весь список,
+  // не совпадающий с тем, что набрано в поле
+  const r = await call("panel_agent_points", {
+    agent: agent,
+    search: document.getElementById("point-search").value.trim(),
+  }).catch(() => null);
   const list = document.getElementById("points-list");
 
   if (!r || !r.success) {
@@ -1092,7 +1187,35 @@ async function openAgent(agent) {
 
   document.getElementById("point-count").textContent = r.points.length;
   renderRules(r);
-  renderPoints(r.points);
+  currentPoints = r.points;
+  applyDayFilter();
+}
+
+// ---------------- ФИЛЬТР ПО ДНЮ ВИЗИТА ----------------
+function applyDayFilter() {
+  const shown = dayFilter
+    ? currentPoints.filter(p => (p.days || "").split(",")
+        .map(d => d.trim()).includes(dayFilter))
+    : currentPoints;
+
+  document.querySelectorAll("#rule-day-load button").forEach(b => {
+    b.classList.toggle("on", b.dataset.day === dayFilter);
+  });
+
+  const info = document.getElementById("points-info");
+  if (dayFilter) {
+    info.innerHTML = `Показано <b>${shown.length}</b> из ${currentPoints.length} · `
+      + `<button type="button" id="day-reset">показать все дни</button>`;
+    info.style.display = "flex";
+    document.getElementById("day-reset").addEventListener("click", () => {
+      dayFilter = "";
+      applyDayFilter();
+    });
+  } else {
+    info.style.display = "none";
+  }
+
+  renderPoints(shown);
 }
 
 // ---------------- ПРАВИЛА НАГРУЗКИ ----------------
@@ -1133,12 +1256,26 @@ function renderRules(r) {
     : `${week} из ${cap} — в норме`;
   daysFact.className = "rule-fact" + (week > cap ? " over" : "");
 
-  document.getElementById("rule-day-load").innerHTML = days.map(full => {
+  // Дни — кнопки фильтра. Цифра на кнопке остаётся прежней (нагрузка по
+  // всей базе агента), выделение показывает, какой день сейчас выбран.
+  const box = document.getElementById("rule-day-load");
+  box.innerHTML = days.map(full => {
     const n = load[full] || 0;
     const short = (DAYS.find(d => d[1] === full) || [full.slice(0, 2)])[0];
     const cls = n > maxDay ? "over" : (n === maxDay ? "full" : "");
-    return `<span class="${cls}">${short} ${n}</span>`;
+    return `<button type="button" data-day="${full}" class="${cls}"
+                    title="${full}: ${n} ${plural(n, "визит", "визита", "визитов")}">
+              <span class="d">${short}</span><span class="n">${n}</span>
+            </button>`;
   }).join("");
+
+  box.querySelectorAll("[data-day]").forEach(b => {
+    b.addEventListener("click", () => {
+      // Повторное нажатие на выбранный день снимает фильтр
+      dayFilter = (dayFilter === b.dataset.day) ? "" : b.dataset.day;
+      applyDayFilter();
+    });
+  });
 
   // Сколько ТОП-точек: три дня можно занять только на них, и запас
   // недели ограничивает их число
@@ -1148,7 +1285,39 @@ function renderRules(r) {
     ? `${top} ${plural(top, "ТОП-точка", "ТОП-точки", "ТОП-точек")}`
     : "ТОП-точек нет";
   topFact.className = "rule-fact";
+
+  // Значки в свёрнутой шапке: даже с закрытыми правилами перегруз
+  // должен быть виден — ради него панель и открывают
+  const flags = [];
+  if (over) flags.push(`<span class="bad">+${count - maxPoints} точек</span>`);
+  if (week > cap) flags.push(`<span class="bad">+${week - cap} визитов</span>`);
+  if (top) flags.push(`<span>ТОП ${top}</span>`);
+  if (!flags.length) flags.push("<span>в норме</span>");
+  document.getElementById("rules-flags").innerHTML = flags.join("");
 }
+
+// ---------------- СВОРАЧИВАНИЕ ПРАВИЛ ----------------
+// Правила нужны один раз — понять, насколько агент перегружен. Дальше
+// они только занимают экран, поэтому состояние запоминается в браузере.
+const RULES_KEY = "panel_rules_open";
+const rulesCard = document.getElementById("point-rules");
+
+function setRulesOpen(open) {
+  rulesCard.dataset.open = open ? "1" : "0";
+  document.getElementById("rules-toggle")
+          .setAttribute("aria-expanded", open ? "true" : "false");
+  try { localStorage.setItem(RULES_KEY, open ? "1" : "0"); } catch (e) {}
+}
+
+try {
+  setRulesOpen(localStorage.getItem(RULES_KEY) !== "0");
+} catch (e) {
+  setRulesOpen(true);
+}
+
+document.getElementById("rules-toggle").addEventListener("click", () => {
+  setRulesOpen(rulesCard.dataset.open === "0");
+});
 
 // ---------------- ВКЛАДКИ ОПЕРАТОРА И АДМИНА ----------------
 // Сколько заявок ждёт — цифра на вкладке «Заявки»
@@ -1446,7 +1615,12 @@ function renderPoints(points) {
 
   if (!points.length) {
     const q = document.getElementById("point-search").value.trim();
-    list.innerHTML = q
+    // Пусто по трём разным причинам, и человек должен понимать, по какой:
+    // иначе он решит, что у агента вообще нет точек, хотя включён фильтр
+    list.innerHTML = dayFilter
+      ? `<div class="empty">На ${dayFilter.toLowerCase()} визитов нет.<br>
+         Нажмите день ещё раз, чтобы снять фильтр.</div>`
+      : q
       ? `<div class="empty">Ничего не найдено по запросу «${q}».</div>`
       : '<div class="empty">У агента пока нет прикреплённых точек.</div>';
     return;
@@ -1868,7 +2042,11 @@ document.getElementById("point-search").addEventListener("input", function () {
   pointTimer = setTimeout(async () => {
     const r = await call("panel_agent_points",
                          { agent: currentAgent, search: value }).catch(() => null);
-    if (r && r.success) renderPoints(r.points);
+    if (!r || !r.success) return;
+    // Фильтр по дню поверх результата поиска: выбранный день не должен
+    // сбрасываться от того, что супервайзер что-то набрал
+    currentPoints = r.points;
+    applyDayFilter();
   }, 250);
 });
 
