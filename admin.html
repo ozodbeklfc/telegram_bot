@@ -158,6 +158,7 @@
   .card.problem:hover { border-color: var(--red); }
 
   .problem-title { color: var(--red); font-weight: 700; font-size: 13px; margin-bottom: 3px; }
+  .over-mark { color: var(--red); font-weight: 700; }
 
   .agent-row {
     display: flex; align-items: center; gap: 10px;
@@ -602,7 +603,7 @@
     <div class="rules" id="point-rules">
       <button class="rules-head" id="rules-toggle" aria-expanded="true">
         <span class="rules-agent" id="point-agent">—</span>
-        <span class="rules-count"><b id="point-count">0</b> точек</span>
+        <span class="rules-count" id="point-count">—</span>
         <span class="rules-flags" id="rules-flags"></span>
         <span class="rules-chev">⌃</span>
       </button>
@@ -610,25 +611,25 @@
       <div class="rules-body" id="rules-body">
         <div class="rule">
           <div class="rule-top">
-            <span class="rule-name">Не больше <b id="rule-max-points">150</b> торговых точек
-              <span class="rule-hint">(по ИНН)</span></span>
-            <span class="rule-fact" id="rule-points-fact">—</span>
-          </div>
-          <div class="bar"><i id="rule-points-bar" style="width:0"></i></div>
-        </div>
-
-        <div class="rule">
-          <div class="rule-top">
             <span class="rule-name">Не больше <b id="rule-max-day">36</b> визитов в один день
               <span class="rule-hint">(<b id="rule-week-cap">180</b> в неделю)</span></span>
             <span class="rule-fact" id="rule-days-fact">—</span>
           </div>
+          <div class="bar"><i id="rule-week-bar" style="width:0"></i></div>
         </div>
 
         <div class="rule">
           <div class="rule-top">
             <span class="rule-name">Три дня — только у ТОП-точек, обычная — <b>один</b> день</span>
             <span class="rule-fact" id="rule-top-fact">—</span>
+          </div>
+        </div>
+
+        <div class="rule">
+          <div class="rule-top">
+            <span class="rule-name">Точек у агента
+              <span class="rule-hint">(по ИНН, отдельного лимита нет)</span></span>
+            <span class="rule-fact" id="rule-points-fact">—</span>
           </div>
         </div>
       </div>
@@ -1119,13 +1120,18 @@ function renderAgents(agents) {
   }
 
   list.innerHTML = agents.map(a => `
-    <button class="card ${a.problems ? "problem" : ""}" data-agent="${a.agent}">
+    <button class="card ${a.problems || a.overBy ? "problem" : ""}" data-agent="${a.agent}">
       <div class="avatar ${a.points ? "" : "quiet"}">${initials(a.agent)}</div>
       <div class="grow">
         <div class="name">${a.agent}
           ${a.problems ? `<span class="badge problem">${a.problems} ${plural(a.problems, "проблема", "проблемы", "проблем")}</span>` : ""}
         </div>
-        <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")}</div>
+        <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")} ·
+          ${a.visits} ${plural(a.visits, "визит", "визита", "визитов")}${
+          a.overBy
+            ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>`
+            : ""
+        }</div>
       </div>
       <div class="chev">›</div>
     </button>
@@ -1167,7 +1173,7 @@ async function openAgent(agent) {
   }
   currentAgent = agent;
   document.getElementById("point-agent").textContent = agent;
-  document.getElementById("point-count").textContent = "—";
+  document.getElementById("point-count").textContent = "";
   document.getElementById("points-list").innerHTML = '<div class="loading">Загружаю точки...</div>';
   show("screen-points");
 
@@ -1185,7 +1191,6 @@ async function openAgent(agent) {
     return;
   }
 
-  document.getElementById("point-count").textContent = r.points.length;
   renderRules(r);
   currentPoints = r.points;
   applyDayFilter();
@@ -1222,39 +1227,37 @@ function applyDayFilter() {
 // Цифры берутся по всей базе агента, а не по показанному списку: при поиске
 // в списке остаются две точки, а лимит всё равно про все.
 function renderRules(r) {
-  const maxPoints = r.maxPoints || 150;
-  const maxDay = r.maxVisitsPerDay || 30;
+  const maxDay = r.maxVisitsPerDay || 36;
   const count = r.pointCount || 0;
+  const days = r.workDays || DAYS.map(d => d[1]);
+  const load = r.dayLoad || {};
+  const week = r.weekVisits || 0;
+  const cap = r.weekCapacity || maxDay * days.length;
+  const over = week > cap;
 
   // Числа берём из ответа, а не из вёрстки: лимиты задаются на сервере,
   // и страница не должна знать их наизусть
-  document.getElementById("rule-max-points").textContent = maxPoints;
   document.getElementById("rule-max-day").textContent = maxDay;
-  document.getElementById("rule-week-cap").textContent =
-    r.weekCapacity || maxDay * (r.workDays || []).length;
+  document.getElementById("rule-week-cap").textContent = cap;
 
-  const fact = document.getElementById("rule-points-fact");
-  const over = count > maxPoints;
-  fact.textContent = over
-    ? `${count} — сверх лимита на ${count - maxPoints}`
-    : `${count} из ${maxPoints}`;
-  fact.className = "rule-fact" + (over ? " over" : "");
+  // Главная цифра теперь визиты: лимита на точки больше нет
+  const daysFact = document.getElementById("rule-days-fact");
+  daysFact.textContent = over
+    ? `${week} — сверх нормы на ${week - cap}`
+    : `${week} из ${cap}`;
+  daysFact.className = "rule-fact" + (over ? " over" : "");
 
-  const bar = document.getElementById("rule-points-bar");
-  bar.style.width = Math.min(100, Math.round(count / maxPoints * 100)) + "%";
+  const bar = document.getElementById("rule-week-bar");
+  bar.style.width = Math.min(100, Math.round(week / cap * 100)) + "%";
   bar.className = over ? "over" : "";
 
-  const load = r.dayLoad || {};
-  const days = r.workDays || DAYS.map(d => d[1]);
-  const overDays = days.filter(d => (load[d] || 0) > maxDay);
+  // Точки показываем как справку, без «из 150»: потолок задаёт неделя
+  const word = plural(count, "точка", "точки", "точек");
+  document.getElementById("point-count").innerHTML = `<b>${count}</b> ${word}`;
 
-  const daysFact = document.getElementById("rule-days-fact");
-  const week = r.weekVisits || 0;
-  const cap = r.weekCapacity || maxDay * days.length;
-  daysFact.textContent = overDays.length
-    ? `${week} визитов из ${cap}`
-    : `${week} из ${cap} — в норме`;
-  daysFact.className = "rule-fact" + (week > cap ? " over" : "");
+  const fact = document.getElementById("rule-points-fact");
+  fact.textContent = `${count} ${word}`;
+  fact.className = "rule-fact" + (count > cap ? " over" : "");
 
   // Дни — кнопки фильтра. Цифра на кнопке остаётся прежней (нагрузка по
   // всей базе агента), выделение показывает, какой день сейчас выбран.
@@ -1289,8 +1292,7 @@ function renderRules(r) {
   // Значки в свёрнутой шапке: даже с закрытыми правилами перегруз
   // должен быть виден — ради него панель и открывают
   const flags = [];
-  if (over) flags.push(`<span class="bad">+${count - maxPoints} точек</span>`);
-  if (week > cap) flags.push(`<span class="bad">+${week - cap} визитов</span>`);
+  if (over) flags.push(`<span class="bad">+${week - cap} визитов</span>`);
   if (top) flags.push(`<span>ТОП ${top}</span>`);
   if (!flags.length) flags.push("<span>в норме</span>");
   document.getElementById("rules-flags").innerHTML = flags.join("");
@@ -1938,7 +1940,7 @@ async function openTransfer(details) {
         <div class="meta">
           ${c.pointCount} ${plural(c.pointCount, "точка", "точки", "точек")} ·
           ${c.canTake
-            ? `свободно ${c.freePoints} ${plural(c.freePoints, "место", "места", "мест")}`
+            ? `свободно ${c.freeVisits} ${plural(c.freeVisits, "визит", "визита", "визитов")}`
             : candReason(c, r)}
         </div>
       </div>
@@ -1951,7 +1953,6 @@ async function openTransfer(details) {
 }
 
 function candReason(c, r) {
-  if (c.reason === "points") return `лимит ${r.maxPoints} точек выбран`;
   if (c.reason === "day_limit") return `все дни по ${r.maxVisitsPerDay} визитов`;
   if (c.reason === "brand") return "уже стоит на этой точке";
   if (c.reason === "limit") return "точка уже закреплена за ним";

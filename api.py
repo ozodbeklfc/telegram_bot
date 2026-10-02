@@ -272,13 +272,21 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                       FROM users
                      WHERE upper(supervisor) = $1
                 ),
-                -- у агента больше трёх дней на одной точке
+                -- Дней на точке больше нормы. Норма зависит от точки:
+                -- ТОП — до трёх, обычная — один. Сравнение с тройкой для
+                -- всех подряд показывало ноль проблем у агента, у которого
+                -- каждая обычная точка стояла на двух днях.
                 too_many AS (
-                    SELECT upper(agent) AS agent, point_code
-                      FROM attachments
-                     WHERE upper(agent) IN (SELECT agent FROM my_agents)
-                     GROUP BY 1, 2
-                    HAVING count(*) > 3
+                    SELECT upper(a.agent) AS agent, a.point_code
+                      FROM attachments a
+                 LEFT JOIN client_base c ON c.point_code = a.point_code
+                     WHERE upper(a.agent) IN (SELECT agent FROM my_agents)
+                     GROUP BY upper(a.agent), a.point_code, COALESCE(c.is_top, false)
+                    -- Приведение к int обязательно: рядом стоит текстовый
+                    -- параметр поиска, и без него драйвер решает, что
+                    -- это тоже текст, и падает на «bigint > text»
+                    HAVING count(*) > CASE WHEN COALESCE(c.is_top, false)
+                                           THEN $3::int ELSE $4::int END
                 ),
                 -- на точке несколько агентов ТОГО ЖЕ бренда, что и наш агент
                 -- (чужие бренды к его проблемам отношения не имеют,
@@ -292,8 +300,22 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                      GROUP BY a.point_code, upper(left(a.agent, 2))
                     HAVING count(DISTINCT upper(a.agent)) > 1
                 )
+                -- Точки считаются по уникальным ИНН — тем же счётом, что
+                -- и лимит внутри карточки агента. Иначе в списке было бы
+                -- одно число, а на экране самого агента другое.
                 SELECT m.agent,
-                       count(DISTINCT t.point_code) AS points,
+                       count(DISTINCT COALESCE(NULLIF(cb.inn, ''), t.point_code)) AS points,
+                       -- Визиты за неделю: одна поездка на одну точку в один
+                       -- день. Три кода одного магазина в понедельник — это
+                       -- один визит, поэтому пара (день, ИНН), а не строки.
+                       --
+                       -- FILTER обязателен: соединение внешнее, и у агента
+                       -- без точек пара выходит (NULL, NULL). Сама пара при
+                       -- этом не NULL, и count посчитал бы её за единицу —
+                       -- агент с нулём точек показывал «1 визит».
+                       count(DISTINCT (t.visit_day,
+                             COALESCE(NULLIF(cb.inn, ''), t.point_code)))
+                           FILTER (WHERE t.point_code IS NOT NULL) AS visits,
                        count(DISTINCT t.point_code) FILTER (
                            WHERE (t.point_code, left(m.agent, 2)) IN
                                  (SELECT point_code, brand FROM same_brand)
@@ -301,21 +323,34 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                                  (SELECT agent, point_code FROM too_many)
                        ) AS problems
                   FROM my_agents m
-             LEFT JOIN attachments t ON upper(t.agent) = m.agent
+             LEFT JOIN attachments t  ON upper(t.agent) = m.agent
+             LEFT JOIN client_base cb ON cb.point_code = t.point_code
                  WHERE m.agent LIKE $2
                  GROUP BY m.agent
-                 ORDER BY problems DESC, points DESC, m.agent
+                 ORDER BY problems DESC, visits DESC, m.agent
                 """,
-                supervisor, pattern,
+                supervisor, pattern, MAX_VISIT_DAYS, MAX_VISIT_DAYS_REGULAR,
             )
     except Exception as e:
         return _db_error(e)
 
+    capacity = MAX_VISITS_PER_DAY * len(WORK_DAYS)
+
     return {
         "success": True,
         "supervisor": supervisor,
+        "weekCapacity": capacity,
+        "maxVisitsPerDay": MAX_VISITS_PER_DAY,
         "agents": [
-            {"agent": r["agent"], "points": r["points"], "problems": r["problems"]}
+            {
+                "agent": r["agent"],
+                "points": r["points"],
+                "visits": r["visits"],
+                "problems": r["problems"],
+                # Перебор по визитам — отдельная беда, не «проблемная точка»:
+                # в списке он должен быть виден сразу, без открытия агента
+                "overBy": max(0, r["visits"] - capacity),
+            }
             for r in rows
         ],
     }
@@ -430,7 +465,6 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
         "weekVisits": load.get("weekVisits", 0),
         "weekCapacity": load.get("weekCapacity", 0),
         "topCount": sum(1 for p in points if p["isTop"]),
-        "maxPoints": MAX_POINTS_PER_AGENT,
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
         "maxDays": MAX_VISIT_DAYS,
         "maxDaysRegular": MAX_VISIT_DAYS_REGULAR,
@@ -677,7 +711,9 @@ async def transfer_candidates(from_agent: str, point_code: str,
         candidates.append({
             "agent": r["agent"],
             "pointCount": load["pointCount"],
-            "freePoints": max(0, MAX_POINTS_PER_AGENT - load["pointCount"]),
+            # Чем ещё может нагрузиться агент — это свободные ВИЗИТЫ:
+            # отдельного запаса по точкам больше нет
+            "freeVisits": max(0, load["weekCapacity"] - load["weekVisits"]),
             "dayLoad": load["dayLoad"],
             "fullDays": load["fullDays"],
             "weekVisits": load["weekVisits"],
@@ -689,14 +725,14 @@ async def transfer_candidates(from_agent: str, point_code: str,
         })
 
     # Сначала те, кто реально может взять, и у кого больше запаса
-    candidates.sort(key=lambda c: (not c["canTake"], -c["freePoints"], c["agent"]))
+    candidates.sort(key=lambda c: (not c["canTake"], -c["freeVisits"], c["agent"]))
 
     return {
         "success": True,
         "brand": brand,
         "fromAgent": from_agent,
         "candidates": candidates,
-        "maxPoints": MAX_POINTS_PER_AGENT,
+        "weekCapacity": MAX_VISITS_PER_DAY * len(WORK_DAYS),
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
     }
 
@@ -1241,7 +1277,13 @@ async def check_inn(inn: str) -> dict:
 # останавливает только НОВОЕ прикрепление. Разбирать накопленное —
 # работа супервайзера в панели.
 # ----------------------------------------------------------------------
-MAX_POINTS_PER_AGENT = 150      # не больше 150 торговых точек на агента
+# Единственный лимит нагрузки — визиты. Отдельного лимита на число точек
+# нет и не нужно: каждая точка требует хотя бы одного визита, поэтому
+# 36 визитов × 5 рабочих дней уже ограничивают агента 180 точками сверху.
+#
+# Так агент сам выбирает, чем занять неделю: 180 обычных точек, или
+# 150 обычных плюс 15 ТОП по три дня, или 60 ТОП-точек — все три варианта
+# дают ровно 180 визитов и все три законны.
 MAX_VISITS_PER_DAY = 36         # не больше 36 визитов в один день недели
 
 # Сколько дней визита агент может занять на ОДНОЙ точке.
@@ -1340,7 +1382,6 @@ async def agent_load(agent: str) -> dict:
         "fullDays": sorted(d for d, n in day_load.items() if n >= MAX_VISITS_PER_DAY),
         "weekVisits": used,
         "weekCapacity": MAX_VISITS_PER_DAY * len(WORK_DAYS),
-        "maxPoints": MAX_POINTS_PER_AGENT,
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
         "maxDays": MAX_VISIT_DAYS,
         "maxDaysRegular": MAX_VISIT_DAYS_REGULAR,
@@ -1363,18 +1404,18 @@ async def check_attach_allowed(point_code: str, agent: str,
          ТОП-точка — до MAX_VISIT_DAYS, обычная — ровно один день.
          Обычный ритейл объезжают раз в неделю, и лишние дни приводили
          к заказам вне маршрута.
-      3. Не больше MAX_POINTS_PER_AGENT точек на агента, счёт по уникальным
-         ИНН. Правило касается только НОВЫХ для агента точек: добавить день
-         на точку, которая у него уже есть, можно и на лимите — число точек
-         от этого не растёт.
-      4. Не больше MAX_VISITS_PER_DAY визитов в один день недели.
+      3. Не больше MAX_VISITS_PER_DAY визитов в один день недели.
          Переполненные дни не запрещают прикрепление целиком — они просто
          исчезают из выбора (fullDays). Запрет только если свободных
          дней не осталось совсем.
 
+    Отдельного лимита на число точек нет: он не нужен. Каждая точка
+    требует хотя бы одного визита, поэтому дневной лимит сам держит
+    потолок в 180 точек на агента.
+
     Возвращает:
       allowed         — можно ли продолжать
-      reason          — 'brand' | 'limit' | 'points' | 'day_limit' | None
+      reason          — 'brand' | 'limit' | 'day_limit' | None
       blockedBy       — логин агента, занявшего точку (для reason='brand')
       myDays          — дни, которые агент уже занял на этой точке
       remaining       — сколько дней ещё можно выбрать
@@ -1383,7 +1424,8 @@ async def check_attach_allowed(point_code: str, agent: str,
       isTop           — ТОП ли эта точка
       maxDaysHere     — сколько дней разрешено именно на этой точке
       pointCount      — сколько точек у агента сейчас
-      maxPoints       — лимит точек
+      weekVisits      — сколько визитов занято за неделю
+      weekCapacity    — сколько визитов помещается в неделю
       maxVisitsPerDay — лимит визитов в день
     """
     brand = agent_brand(agent)
@@ -1442,7 +1484,8 @@ async def check_attach_allowed(point_code: str, agent: str,
 
     limits = {
         "pointCount": load["pointCount"],
-        "maxPoints": MAX_POINTS_PER_AGENT,
+        "weekVisits": load["weekVisits"],
+        "weekCapacity": load["weekCapacity"],
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
         "maxDays": max_days_here,
         "maxDaysHere": max_days_here,
@@ -1482,13 +1525,6 @@ async def check_attach_allowed(point_code: str, agent: str,
 
     if other_agent:
         return answer(False, "brand", blockedBy=other_agent)
-
-    # Правило 3. Точка новая для агента? Тогда она увеличит их число.
-    # «Новая» — значит у агента нет ни одного дня на этом ИНН: другой код
-    # того же магазина места в лимите не добавит, оно уже занято.
-    is_new_point = not my_days
-    if is_new_point and load["pointCount"] >= MAX_POINTS_PER_AGENT:
-        return answer(False, "points")
 
     remaining = max_days_here - len(my_days)
     if remaining <= 0:
@@ -1690,11 +1726,6 @@ def attach_denied_text(check: dict) -> str:
     if reason == "brand":
         return (f"В этой точке закреплён другой агент вашего бренда "
                 f"({check.get('blockedBy')})")
-
-    if reason == "points":
-        return (f"У вас уже {check.get('pointCount', MAX_POINTS_PER_AGENT)} торговых точек — "
-                f"это предел ({MAX_POINTS_PER_AGENT}). Чтобы взять новую, "
-                f"освободите лишние через супервайзера.")
 
     if reason == "day_limit":
         return (f"Во всех рабочих днях у вас уже по {MAX_VISITS_PER_DAY} визитов — "
@@ -2160,7 +2191,8 @@ async def day_points(agent: str, day: str = "") -> dict:
         ],
         "pointCount": load.get("pointCount", 0),
         "dayLoad": load.get("dayLoad", {}),
-        "maxPoints": MAX_POINTS_PER_AGENT,
+        "weekVisits": load.get("weekVisits", 0),
+        "weekCapacity": load.get("weekCapacity", 0),
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
     }
 

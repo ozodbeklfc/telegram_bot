@@ -1689,15 +1689,16 @@
               plural(list.length, 'визит', 'визита', 'визитов');
 
         // Правила и своя нагрузка: агент видит те же цифры, что супервайзер
-        const overPoints = r.pointCount > r.maxPoints;
         const load = r.dayLoad || {};
         const todayLoad = load[r.today] || 0;
+        const week = r.weekVisits || 0;
+        const cap = r.weekCapacity || 0;
         document.getElementById('pts-load').innerHTML =
-            `Точек у вас: <b class="${overPoints ? 'over' : ''}">${r.pointCount}</b> из ${r.maxPoints}` +
-            ` · визитов ${r.today ? 'сегодня' : 'в текущий день'}: ` +
+            `Визитов за неделю: <b class="${week > cap ? 'over' : ''}">${week}</b> из ${cap}` +
+            ` · ${r.today ? 'сегодня' : 'в текущий день'}: ` +
             `<b class="${todayLoad > r.maxVisitsPerDay ? 'over' : ''}">${todayLoad}</b> из ${r.maxVisitsPerDay}` +
-            `<br>Правила: не больше ${r.maxPoints} торговых точек на агента и ` +
-            `${r.maxVisitsPerDay} визитов в один день. ` +
+            ` · точек у вас: ${r.pointCount}` +
+            `<br>Правила: не больше ${r.maxVisitsPerDay} визитов в один день. ` +
             `Обычная точка закрепляется на один день в неделю, ТОП-точка — до трёх.`;
 
         if (!list.length) {
@@ -2386,11 +2387,6 @@
                 showBlocked("В этой точке закреплён другой агент вашего бренда",
                             point.pointName,
                             "Агент: " + check.blockedBy);
-            } else if (check.reason === 'points') {
-                showBlocked("Достигнут лимит — " + check.maxPoints + " торговых точек",
-                            point.pointName,
-                            "У вас сейчас " + check.pointCount + " точек. Новую взять нельзя. " +
-                            "Чтобы освободить место, обратитесь к супервайзеру.");
             } else if (check.reason === 'day_limit') {
                 showBlocked("Все дни заполнены по " + check.maxVisitsPerDay + " визитов",
                             point.pointName,

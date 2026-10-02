@@ -337,8 +337,9 @@ async def process_password(message: Message, state: FSMContext):
 
         await checking_msg.edit_text(
             f"✅ Успешный вход!\n\n👤 Агент: {login_value}\n\n"
-            f"📋 Правила: не больше {api.MAX_POINTS_PER_AGENT} торговых точек "
-            f"и {api.MAX_VISITS_PER_DAY} визитов в один день.\n"
+            f"📋 Правила: не больше {api.MAX_VISITS_PER_DAY} визитов в один день "
+            f"({api.MAX_VISITS_PER_DAY * len(data.DAYS)} в неделю).\n"
+            f"Обычная точка — один день в неделю, ТОП — до {api.MAX_VISIT_DAYS}.\n"
             f"🔑 Сменить пароль — команда /change_password"
         )
         await delete_message_safe(message)  # убираем пароль из переписки
@@ -491,11 +492,6 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         if reason == "brand":
             head = "⛔️ В ЭТОЙ ТОЧКЕ ЗАКРЕПЛЁН ДРУГОЙ АГЕНТ ВАШЕГО БРЕНДА"
             body = f"👤 Агент: {check.get('blockedBy')}"
-        elif reason == "points":
-            head = f"⛔️ ДОСТИГНУТ ЛИМИТ — {api.MAX_POINTS_PER_AGENT} ТОРГОВЫХ ТОЧЕК"
-            body = (f"📊 У вас сейчас: {check.get('pointCount')} точек\n\n"
-                    f"Новую взять нельзя. Чтобы освободить место, обратитесь "
-                    f"к супервайзеру — он открепит ненужные точки.")
         elif reason == "day_limit":
             head = f"⛔️ ВСЕ ДНИ ЗАПОЛНЕНЫ ПО {api.MAX_VISITS_PER_DAY} ВИЗИТОВ"
             body = ("📅 Свободных дней не осталось.\n\n"
