@@ -18,6 +18,7 @@
 """
 
 import csv
+import io
 import re
 import sys
 from collections import Counter
@@ -63,13 +64,85 @@ def normalize_day(raw: str) -> str | None:
     return DAY_MAP.get(key)
 
 
+# Кодировки, в которых встречаются выгрузки. Порядок важен.
+#
+# Excel в русской локали сохраняет CSV в cp1251, и байт «К» (0xCA) ломает
+# чтение в UTF-8 с ошибкой «invalid continuation byte». В турецкой локали
+# тот же файл окажется в cp1254. Поэтому кодировку не задаём жёстко,
+# а подбираем.
+ENCODINGS = ("utf-8-sig", "cp1251", "cp1254", "latin-1")
+
+
+# Буквы, по которым узнаётся правильно прочитанный текст
+CYRILLIC = re.compile(r"[\u0400-\u04FF]")
+TURKISH = re.compile(r"[ğĞşŞıİ]")
+# Латиница с диакритикой, которой в наших выгрузках взяться неоткуда:
+# так выглядит кириллица, прочитанная чужой однобайтовой кодировкой
+MOJIBAKE = re.compile(r"[àáâãäåæçèéêëìíîïðñòóôõöøùúûýþÿÀÁÂÃÄÅÆÈÉÊËÌÍÎÏÐÑÒÓÔÕØÙÚÛÝÞ]")
+# Слово, где кириллица и латиница вперемешку — «Ьnvanэ». Внутри одного
+# слова такого не бывает, это верный признак неверной кодировки
+MIXED = re.compile(r"\b(?=\w*[\u0400-\u04FF])(?=\w*[A-Za-z])\w+\b")
+
+
+def _score_text(text: str) -> int:
+    """
+    Насколько осмысленно выглядит текст после расшифровки.
+
+    Нужен, потому что ошибку чтения однобайтовые кодировки не выдают:
+    cp1251 и cp1254 проглотят любые байты, просто буквы получатся разные.
+    Поэтому выбираем не «первую подошедшую», а самую правдоподобную —
+    иначе турецкая выгрузка молча превратилась бы в «Cari Ьnvanэ».
+    """
+    return (len(CYRILLIC.findall(text))
+            + len(TURKISH.findall(text)) * 3
+            - len(MOJIBAKE.findall(text))
+            - len(MIXED.findall(text)) * 5)
+
+
+def read_text(path: str):
+    """
+    Читает файл, сам подбирая кодировку. Возвращает (текст, кодировка).
+
+    UTF-8 проверяется первым: если файл в нём, вопрос закрыт. Если нет,
+    из однобайтовых кодировок выбирается та, где получилось больше
+    кириллицы — у cp1251 и cp1254 одни и те же байты значат разные буквы,
+    и ошибку чтения ни одна из них не выдаст. Считать «подошла первая»
+    здесь нельзя: турецкий файл молча превратился бы в кракозябры.
+    """
+    raw = open(path, "rb").read()
+
+    try:
+        return raw.decode("utf-8-sig"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+
+    best, best_enc, best_score = None, None, None
+    for enc in ENCODINGS[1:]:
+        try:
+            text = raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        score = _score_text(text)
+        if best_score is None or score > best_score:
+            best, best_enc, best_score = text, enc, score
+
+    if best is None:
+        best, best_enc = raw.decode("latin-1"), "latin-1"
+
+    return best, best_enc
+
+
 def read_csv_rows(path: str):
     """Читает CSV, определяя разделитель (';' в выгрузках из Excel)."""
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        sample = f.read(4096)
-        f.seek(0)
-        delimiter = ";" if sample.count(";") >= sample.count(",") else ","
-        return list(csv.reader(f, delimiter=delimiter)), delimiter
+    text, encoding = read_text(path)
+
+    # Считаем, чего в файле больше: ';' или ','
+    sample = text[:4096]
+    delimiter = ";" if sample.count(";") >= sample.count(",") else ","
+
+    print(f"Кодировка файла: {encoding}, разделитель: '{delimiter}'")
+    rows = list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
+    return rows, delimiter
 
 
 def looks_like_header(row) -> bool:
@@ -187,11 +260,16 @@ def main():
     report = []
     counter = Counter()
     unknown_days = Counter()
+    skipped_empty = 0        # пустые строки
+    skipped_no_code = 0      # нет кода контрагента
+    skipped_no_days = 0      # ни один день не распознан
+    loaded_rows = 0          # строк файла, попавших в базу
 
     for i, row in enumerate(rows):
         line_no = i + offset
 
         if not any(cell.strip() for cell in row):
+            skipped_empty += 1
             continue
 
         point_code = row[code_col].strip() if len(row) > code_col else ""
@@ -201,6 +279,7 @@ def main():
         if not point_code:
             report.append((line_no, " | ".join(row), "пустой код контрагента"))
             counter["пустой код контрагента"] += 1
+            skipped_no_code += 1
             continue
 
         # В одной ячейке может быть несколько дней через запятую
@@ -220,13 +299,21 @@ def main():
             counter["не распознан день визита"] += 1
 
         if not days:
+            # Ни одного пригодного дня — строку загрузить не во что
+            skipped_no_days += 1
+            if not bad:
+                report.append((line_no, " | ".join(row), "день визита не указан"))
+                counter["день визита не указан"] += 1
             continue
 
         agent = row[agent_col].strip().upper() if agent_col >= 0 and len(row) > agent_col else ""
-        # Бренд — буквенная часть логина: OR0104 → OR, BAH001 → BAH
-        brand = re.match(r"^[A-Z]+", agent).group(0) if agent else ""
+        # Бренд — ровно первые два символа: UL0112 и ULTP0101 — один бренд UL
+        brand = agent[:2] if agent else ""
 
-        data.append((point_code, point_name, brand, agent or None, ", ".join(days)))
+        # Каждый день визита сохраняем отдельной строкой
+        loaded_rows += 1
+        for day in days:
+            data.append((point_code, point_name, brand, agent or None, day))
 
     if data:
         cur = conn.cursor()
@@ -244,11 +331,27 @@ def main():
 
     conn.close()
 
-    print(f"\nСтрок в файле: {len(rows)}")
-    print(f"✅ Загружено:   {len(data)}")
-    print(f"⚠️  С замечаниями: {len(report)}")
-    for reason, count in counter.most_common():
-        print(f"   • {reason}: {count}")
+    total_skipped = skipped_empty + skipped_no_code + skipped_no_days
+
+    print(f"\nСтрок с данными:  {len(rows)}")
+    print(f"✅ Обработано:     {loaded_rows}")
+    print(f"⚠️  Пропущено:      {total_skipped}")
+    print(f"📌 Записей в базе: {len(data)} (по одной на каждый день визита)")
+    if skipped_no_days:
+        print(f"     • день визита не распознан или пуст: {skipped_no_days}")
+    if skipped_no_code:
+        print(f"     • нет кода контрагента: {skipped_no_code}")
+    if skipped_empty:
+        print(f"     • пустые строки: {skipped_empty}")
+
+    # Числа должны сходиться — иначе где-то потеря, о которой лучше знать
+    if loaded_rows + total_skipped != len(rows):
+        print(f"   ⚠️  Баланс не сходится: {loaded_rows} + {total_skipped} != {len(rows)}")
+
+    if counter:
+        print("   Замечания:")
+        for reason, count in counter.most_common():
+            print(f"     • {reason}: {count}")
     if unknown_days:
         print(f"   Нераспознанные значения дней: {dict(unknown_days.most_common(10))}")
 

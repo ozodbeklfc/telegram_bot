@@ -611,7 +611,7 @@
       <div class="rules-body" id="rules-body">
         <div class="rule">
           <div class="rule-top">
-            <span class="rule-name">Не больше <b id="rule-max-day">36</b> визитов в один день
+            <span class="rule-name">Не больше <b id="rule-max-day">36</b> ТРТ в один день
               <span class="rule-hint">(<b id="rule-week-cap">180</b> в неделю)</span></span>
             <span class="rule-fact" id="rule-days-fact">—</span>
           </div>
@@ -1127,7 +1127,7 @@ function renderAgents(agents) {
           ${a.problems ? `<span class="badge problem">${a.problems} ${plural(a.problems, "проблема", "проблемы", "проблем")}</span>` : ""}
         </div>
         <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")} ·
-          ${a.visits} ${plural(a.visits, "визит", "визита", "визитов")}${
+          ${a.visits} ТРТ в неделю${
           a.overBy
             ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>`
             : ""
@@ -1267,7 +1267,7 @@ function renderRules(r) {
     const short = (DAYS.find(d => d[1] === full) || [full.slice(0, 2)])[0];
     const cls = n > maxDay ? "over" : (n === maxDay ? "full" : "");
     return `<button type="button" data-day="${full}" class="${cls}"
-                    title="${full}: ${n} ${plural(n, "визит", "визита", "визитов")}">
+                    title="${full}: ${n} ТРТ">
               <span class="d">${short}</span><span class="n">${n}</span>
             </button>`;
   }).join("");
@@ -1292,7 +1292,7 @@ function renderRules(r) {
   // Значки в свёрнутой шапке: даже с закрытыми правилами перегруз
   // должен быть виден — ради него панель и открывают
   const flags = [];
-  if (over) flags.push(`<span class="bad">+${week - cap} визитов</span>`);
+  if (over) flags.push(`<span class="bad">+${week - cap} ТРТ</span>`);
   if (top) flags.push(`<span>ТОП ${top}</span>`);
   if (!flags.length) flags.push("<span>в норме</span>");
   document.getElementById("rules-flags").innerHTML = flags.join("");
@@ -1620,7 +1620,7 @@ function renderPoints(points) {
     // Пусто по трём разным причинам, и человек должен понимать, по какой:
     // иначе он решит, что у агента вообще нет точек, хотя включён фильтр
     list.innerHTML = dayFilter
-      ? `<div class="empty">На ${dayFilter.toLowerCase()} визитов нет.<br>
+      ? `<div class="empty">На ${dayFilter.toLowerCase()} ТРТ нет.<br>
          Нажмите день ещё раз, чтобы снять фильтр.</div>`
       : q
       ? `<div class="empty">Ничего не найдено по запросу «${q}».</div>`
@@ -1859,7 +1859,7 @@ async function openFix(pointCode, keep) {
   if (dropBtn) {
     dropBtn.addEventListener("click", async () => {
       if (!confirm(`Снять точку с ${currentAgent}?\n\nОна останется без агента, ` +
-                   `и визитов туда больше не будет. Если точку нужно сохранить ` +
+                   `и поездок туда больше не будет. Если точку нужно сохранить ` +
                    `в маршрутах — выберите «Передать другому агенту».`)) return;
 
       dropBtn.disabled = true;
@@ -1940,7 +1940,7 @@ async function openTransfer(details) {
         <div class="meta">
           ${c.pointCount} ${plural(c.pointCount, "точка", "точки", "точек")} ·
           ${c.canTake
-            ? `свободно ${c.freeVisits} ${plural(c.freeVisits, "визит", "визита", "визитов")}`
+            ? `свободно ${c.freeVisits} ТРТ`
             : candReason(c, r)}
         </div>
       </div>
@@ -1953,7 +1953,7 @@ async function openTransfer(details) {
 }
 
 function candReason(c, r) {
-  if (c.reason === "day_limit") return `все дни по ${r.maxVisitsPerDay} визитов`;
+  if (c.reason === "day_limit") return `все дни по ${r.maxVisitsPerDay} ТРТ`;
   if (c.reason === "brand") return "уже стоит на этой точке";
   if (c.reason === "limit") return "точка уже закреплена за ним";
   return "взять не может";
@@ -1976,7 +1976,7 @@ function pickCandidate(agent, list, details) {
       ${maxHere > 1
         ? `ТОП-точка — можно выбрать до ${maxHere} дней.`
         : "Обычная точка — выберите один день визита."}
-      Дни, где у него уже норма визитов, в списке не показаны.
+      Дни, где у него уже норма ТРТ, в списке не показаны.
     </p>
     <div id="transfer-days">
       ${(c.freeDays || []).map(d => `

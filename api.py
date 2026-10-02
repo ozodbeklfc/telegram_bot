@@ -796,7 +796,7 @@ async def transfer_point(point_code: str, from_agent: str, to_agent: str,
     if overloaded:
         return {"success": False,
                 "message": f"У {to_agent} в {', '.join(overloaded)} уже "
-                           f"{MAX_VISITS_PER_DAY} визитов. Выберите другие дни."}
+                           f"{MAX_VISITS_PER_DAY} ТРТ. Выберите другие дни."}
 
     try:
         pool = await get_pool()
@@ -1639,7 +1639,7 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
     overloaded = [d for d in days if d in full_days]
     if overloaded:
         return {"success": False,
-                "message": f"В {', '.join(overloaded)} у вас уже {MAX_VISITS_PER_DAY} визитов — "
+                "message": f"В {', '.join(overloaded)} у вас уже {MAX_VISITS_PER_DAY} ТРТ — "
                            f"это предел на один день. Выберите другой день."}
 
     max_here = check.get("maxDaysHere", MAX_VISIT_DAYS)
@@ -1728,7 +1728,7 @@ def attach_denied_text(check: dict) -> str:
                 f"({check.get('blockedBy')})")
 
     if reason == "day_limit":
-        return (f"Во всех рабочих днях у вас уже по {MAX_VISITS_PER_DAY} визитов — "
+        return (f"Во всех рабочих днях у вас уже по {MAX_VISITS_PER_DAY} ТРТ — "
                 f"это предел на один день. Свободных дней не осталось.")
 
     # reason == 'limit' — дни на точке кончились. Причина разная:

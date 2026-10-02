@@ -337,7 +337,7 @@ async def process_password(message: Message, state: FSMContext):
 
         await checking_msg.edit_text(
             f"✅ Успешный вход!\n\n👤 Агент: {login_value}\n\n"
-            f"📋 Правила: не больше {api.MAX_VISITS_PER_DAY} визитов в один день "
+            f"📋 Правила: не больше {api.MAX_VISITS_PER_DAY} ТРТ в один день "
             f"({api.MAX_VISITS_PER_DAY * len(data.DAYS)} в неделю).\n"
             f"Обычная точка — один день в неделю, ТОП — до {api.MAX_VISIT_DAYS}.\n"
             f"🔑 Сменить пароль — команда /change_password"
@@ -493,7 +493,7 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
             head = "⛔️ В ЭТОЙ ТОЧКЕ ЗАКРЕПЛЁН ДРУГОЙ АГЕНТ ВАШЕГО БРЕНДА"
             body = f"👤 Агент: {check.get('blockedBy')}"
         elif reason == "day_limit":
-            head = f"⛔️ ВСЕ ДНИ ЗАПОЛНЕНЫ ПО {api.MAX_VISITS_PER_DAY} ВИЗИТОВ"
+            head = f"⛔️ ВСЕ ДНИ ЗАПОЛНЕНЫ ПО {api.MAX_VISITS_PER_DAY} ТРТ"
             body = ("📅 Свободных дней не осталось.\n\n"
                     + day_load_text(check.get("dayLoad", {})))
         elif check.get("isTop"):  # reason == 'limit' на ТОП-точке
@@ -542,7 +542,7 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         note += (f"\n\nУ вас уже занято: {', '.join(taken)}\n"
                  f"Можно выбрать ещё {remaining}.")
     if full:
-        note += (f"\n\n🚫 Заполнены по {api.MAX_VISITS_PER_DAY} визитов: "
+        note += (f"\n\n🚫 Заполнены по {api.MAX_VISITS_PER_DAY} ТРТ: "
                  f"{', '.join(full)} — эти дни выбрать нельзя.")
 
     await message.answer(
@@ -870,7 +870,7 @@ async def add_delivery(callback: CallbackQuery, state: FSMContext):
 
     note = ""
     if full:
-        note = (f"\n🚫 Заполнены по {api.MAX_VISITS_PER_DAY} визитов: "
+        note = (f"\n🚫 Заполнены по {api.MAX_VISITS_PER_DAY} ТРТ: "
                 f"{', '.join(full)} — эти дни выбрать нельзя.")
 
     await state.set_state(AddStates.choosing_days)
@@ -950,7 +950,7 @@ async def toggle_day(callback: CallbackQuery, state: FSMContext):
     if day in full:
         await safe_answer(
             callback,
-            f"{day} — у вас уже {api.MAX_VISITS_PER_DAY} визитов в этот день. "
+            f"{day} — у вас уже {api.MAX_VISITS_PER_DAY} ТРТ в этот день. "
             f"Это предел, выберите другой день.",
             show_alert=True)
         return

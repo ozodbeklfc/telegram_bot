@@ -1390,7 +1390,7 @@
                 const usedElsewhere = opt.value !== select.value && chosen.includes(opt.value);
 
                 opt.disabled = isFull || isTaken || usedElsewhere;
-                opt.textContent = isFull ? opt.value + ' — заполнен по норме визитов'
+                opt.textContent = isFull ? opt.value + ' — заполнен по норме ТРТ'
                                 : isTaken ? opt.value + ' — уже занят вами'
                                 : opt.value;
             });
@@ -1685,8 +1685,7 @@
 
         document.getElementById('pts-sub').textContent = isAll
             ? `все точки: ${list.length}`
-            : `${r.day}${r.day === r.today ? ' (сегодня)' : ''}: ${list.length} ` +
-              plural(list.length, 'визит', 'визита', 'визитов');
+            : `${r.day}${r.day === r.today ? ' (сегодня)' : ''}: ${list.length} ТРТ`;
 
         // Правила и своя нагрузка: агент видит те же цифры, что супервайзер
         const load = r.dayLoad || {};
@@ -1694,17 +1693,17 @@
         const week = r.weekVisits || 0;
         const cap = r.weekCapacity || 0;
         document.getElementById('pts-load').innerHTML =
-            `Визитов за неделю: <b class="${week > cap ? 'over' : ''}">${week}</b> из ${cap}` +
+            `ТРТ за неделю: <b class="${week > cap ? 'over' : ''}">${week}</b> из ${cap}` +
             ` · ${r.today ? 'сегодня' : 'в текущий день'}: ` +
             `<b class="${todayLoad > r.maxVisitsPerDay ? 'over' : ''}">${todayLoad}</b> из ${r.maxVisitsPerDay}` +
             ` · точек у вас: ${r.pointCount}` +
-            `<br>Правила: не больше ${r.maxVisitsPerDay} визитов в один день. ` +
+            `<br>Правила: не больше ${r.maxVisitsPerDay} ТРТ в один день. ` +
             `Обычная точка закрепляется на один день в неделю, ТОП-точка — до трёх.`;
 
         if (!list.length) {
             box.innerHTML = isAll
                 ? '<div class="empty-box">У вас пока нет прикреплённых точек.</div>'
-                : `<div class="empty-box">На ${esc(r.day)} визитов не назначено.<br>` +
+                : `<div class="empty-box">На ${esc(r.day)} ТРТ не назначено.<br>` +
                   'Выберите другой день в фильтре сверху.</div>';
             return;
         }
@@ -1748,7 +1747,7 @@
         const note = document.getElementById('add-note');
         if (note) {
             if (addFullDays.length) {
-                note.textContent = 'Заполнены по норме визитов: ' + addFullDays.join(', ') +
+                note.textContent = 'Заполнены по норме ТРТ: ' + addFullDays.join(', ') +
                                    ' — эти дни выбрать нельзя.';
                 note.style.display = 'block';
             } else {
@@ -2388,7 +2387,7 @@
                             point.pointName,
                             "Агент: " + check.blockedBy);
             } else if (check.reason === 'day_limit') {
-                showBlocked("Все дни заполнены по " + check.maxVisitsPerDay + " визитов",
+                showBlocked("Все дни заполнены по " + check.maxVisitsPerDay + " ТРТ",
                             point.pointName,
                             "Свободных дней визита не осталось. " +
                             "Разгрузить день может супервайзер.");
@@ -2462,7 +2461,7 @@
             }
             if (attachFullDays.length) {
                 parts.push('Дни ' + attachFullDays.join(', ') +
-                           ' заполнены по норме визитов — выбрать их нельзя.');
+                           ' заполнены по норме ТРТ — выбрать их нельзя.');
             }
             note.textContent = parts.join(' ');
             note.style.display = 'block';
