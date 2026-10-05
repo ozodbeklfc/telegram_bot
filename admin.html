@@ -297,6 +297,10 @@
   .day-filter button.on {
     background: var(--navy); border-color: var(--navy);
   }
+  /* Заполненный день в окне смены: виден, но нажать нельзя — иначе
+     непонятно, почему дня нет в списке */
+  .day-filter button.off { opacity: .45; cursor: default; background: #F7F9FC; }
+  .day-filter button.off:hover { border-color: var(--line); }
   .day-filter button.on .d { color: var(--ice); }
   .day-filter button.on .n { color: #fff; }
 
@@ -727,6 +731,21 @@
 
     <div class="modal-actions">
       <button class="btn ghost" id="fix-close">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div id="days-overlay" class="overlay">
+  <div class="modal" style="max-width:420px; max-height:88vh; overflow-y:auto;">
+    <h2>Сменить день визита</h2>
+    <div class="who" id="days-point">—</div>
+
+    <div id="days-msg" class="msg"></div>
+    <div id="days-body"></div>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="days-cancel">Отмена</button>
+      <button class="btn" id="days-save" disabled>Сохранить</button>
     </div>
   </div>
 </div>
@@ -1782,6 +1801,9 @@ async function openFix(pointCode, keep) {
       <p style="margin:0 0 10px; font-size:13.5px; color:#5A6478;">
         Сейчас на точке: <b>${mine.days || "нет дней"}</b>
       </p>
+      <button class="btn" id="fix-days" style="width:100%; margin-bottom:9px;">
+        📅 Сменить день визита
+      </button>
       <button class="btn" id="fix-transfer" style="width:100%; margin-bottom:9px;">
         ↗ Передать другому агенту
       </button>
@@ -1875,7 +1897,153 @@ async function openFix(pointCode, keep) {
   if (transferBtn) {
     transferBtn.addEventListener("click", () => openTransfer(r));
   }
+
+  const daysBtn = document.getElementById("fix-days");
+  if (daysBtn) {
+    daysBtn.addEventListener("click", () => openDays(r));
+  }
 }
+
+// ---------------- СМЕНА ДНЯ ВИЗИТА ----------------
+// Прикрепляет точки только сам агент, поэтому перенести точку
+// с перегруженного дня на свободный супервайзеру было нечем:
+// он мог лишь снять день и просить агента прикрепиться заново.
+const daysOverlay = document.getElementById("days-overlay");
+let pickedDays = [];
+let startDays = [];
+let daysMax = 1;
+
+document.getElementById("days-cancel").addEventListener("click", closeDays);
+daysOverlay.addEventListener("click", e => {
+  if (e.target === daysOverlay) closeDays();
+});
+
+function closeDays() {
+  daysOverlay.classList.remove("active");
+  pickedDays = [];
+}
+
+function daysMessage(text, ok) {
+  const msg = document.getElementById("days-msg");
+  msg.className = "msg " + (ok ? "" : "error");
+  msg.textContent = text;
+  msg.style.display = text ? "block" : "none";
+  if (ok) { msg.style.background = "#E6F7F4"; msg.style.color = "#0A7A6B"; }
+}
+
+async function openDays(details) {
+  pickedDays = [];
+  daysMessage("", true);
+  document.getElementById("days-point").textContent =
+    details.pointName + " · " + details.pointCode;
+  document.getElementById("days-body").innerHTML =
+    '<div class="loading">Загружаю дни...</div>';
+  document.getElementById("days-save").disabled = true;
+  daysOverlay.classList.add("active");
+
+  const r = await call("panel_day_options",
+                       { agent: currentAgent, pointCode: fixPoint }).catch(() => null);
+  const body = document.getElementById("days-body");
+
+  if (!r || !r.success) {
+    body.innerHTML = `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+
+  daysMax = r.maxDays;
+  pickedDays = (r.currentDays || []).slice();
+  startDays = pickedDays.slice();
+
+  const norm = r.isTop
+    ? `ТОП-точка — можно выбрать до ${r.maxDays} дней.`
+    : "Обычная точка — один день визита в неделю.";
+
+  body.innerHTML = `
+    <div class="norm ${r.isTop ? "top" : ""}">${norm}</div>
+    <p style="margin:0 0 10px; font-size:13.5px; color:#5A6478;">
+      Сейчас: <b>${(r.currentDays || []).join(", ") || "нет дней"}</b>.
+      Под каждым днём — сколько ТРТ у ${currentAgent} в этот день
+      без учёта этой точки.
+    </p>
+    <div class="day-filter" id="days-pick">
+      ${(r.workDays || []).map(d => {
+        const n = (r.dayLoad || {})[d] || 0;
+        // Закрыт тот день, который не вернул сервер в selectableDays.
+        // Свой текущий день закрытым не бывает, даже если он забит:
+        // точка уже в нём стоит и сама себе загрузку не добавляет
+        const full = !(r.selectableDays || r.workDays || []).includes(d);
+        const here = (r.currentDays || []).includes(d);
+        const on = pickedDays.includes(d);
+        const short = (DAYS.find(x => x[1] === d) || [d.slice(0, 2)])[0];
+        const hint = full ? "день заполнен"
+                   : (here && n >= (r.maxVisitsPerDay || 36)
+                      ? "день заполнен другими точками, но эту можно оставить"
+                      : d);
+        return `<button type="button" data-pick="${d}"
+                        class="${on ? "on" : ""} ${full ? "off" : ""}"
+                        ${full ? "disabled" : ""}
+                        title="${hint}">
+                  <span class="d">${short}</span><span class="n">${n}</span>
+                </button>`;
+      }).join("")}
+    </div>`;
+
+  body.querySelectorAll("[data-pick]").forEach(b => {
+    b.addEventListener("click", () => {
+      const day = b.dataset.pick;
+      if (pickedDays.includes(day)) {
+        pickedDays = pickedDays.filter(d => d !== day);
+      } else if (daysMax === 1) {
+        // На обычной точке выбор один: нажатие заменяет прежний день,
+        // а не копит второй — иначе сервер просто откажет
+        pickedDays = [day];
+      } else if (pickedDays.length < daysMax) {
+        pickedDays.push(day);
+      } else {
+        daysMessage(`Можно выбрать не больше ${daysMax}`, false);
+        return;
+      }
+      daysMessage("", true);
+      body.querySelectorAll("[data-pick]").forEach(x => {
+        x.classList.toggle("on", pickedDays.includes(x.dataset.pick));
+      });
+      syncDaysSave();
+    });
+  });
+
+  syncDaysSave();
+}
+
+// Кнопка включается, только когда набор дней реально изменился. Иначе
+// она выглядит рабочей, а сервер отвечает «это те же самые дни» —
+// нажатие впустую.
+function syncDaysSave() {
+  const same = pickedDays.length === startDays.length
+    && pickedDays.every(d => startDays.includes(d));
+  document.getElementById("days-save").disabled = !pickedDays.length || same;
+}
+
+document.getElementById("days-save").addEventListener("click", async () => {
+  if (!pickedDays.length) return;
+
+  const btn = document.getElementById("days-save");
+  btn.disabled = true;
+  btn.textContent = "Сохраняю...";
+
+  const res = await call("panel_set_visit_days", {
+    agent: currentAgent, pointCode: fixPoint, days: pickedDays,
+  }).catch(() => null);
+
+  btn.textContent = "Сохранить";
+
+  if (!res || !res.success) {
+    btn.disabled = false;
+    return daysMessage(res ? res.message : "Сервер не отвечает", false);
+  }
+
+  closeDays();
+  openFix(fixPoint, res.message);
+});
 
 // ---------------- ПЕРЕДАЧА ТОЧКИ ----------------
 // Открепить точку «в никуда» — значит выкинуть клиента из маршрутов.

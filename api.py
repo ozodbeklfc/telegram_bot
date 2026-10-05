@@ -852,6 +852,216 @@ async def transfer_point(point_code: str, from_agent: str, to_agent: str,
             "message": f"Точка передана: {from_agent} → {to_agent} ({', '.join(days)})"}
 
 
+async def day_options(agent: str, point_code: str) -> dict:
+    """
+    Какие дни визита можно поставить агенту на этой точке.
+
+    Загрузка по дням считается БЕЗ самой точки: иначе день, на котором
+    она сейчас стоит, выглядел бы занятым ею же, и переставить точку
+    внутри её собственного дня было бы нельзя.
+    """
+    agent = (agent or "").strip().upper()
+    if not agent or not point_code:
+        return {"success": False, "message": "Не указан агент или точка"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            info = await conn.fetchrow(
+                """
+                SELECT point_name, COALESCE(is_top, false) AS is_top,
+                       NULLIF(inn, '') AS inn
+                  FROM client_base WHERE point_code = $1
+                """,
+                point_code,
+            )
+            point_key = (info["inn"] if info and info["inn"] else point_code)
+
+            current = await conn.fetch(
+                """
+                SELECT DISTINCT visit_day FROM attachments
+                 WHERE point_code = $1 AND upper(agent) = $2
+                   AND visit_day IS NOT NULL AND visit_day <> ''
+                """,
+                point_code, agent,
+            )
+            rows = await conn.fetch(
+                f"""
+                SELECT a.visit_day, count(DISTINCT {POINT_KEY}) AS visits
+                  FROM attachments a
+             LEFT JOIN client_base c ON c.point_code = a.point_code
+                 WHERE upper(a.agent) = $1
+                   AND {POINT_KEY} <> $2
+                   AND a.visit_day IS NOT NULL AND a.visit_day <> ''
+                 GROUP BY a.visit_day
+                """,
+                agent, point_key,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    if not current:
+        return {"success": False,
+                "message": f"{agent} не закреплён за этой точкой"}
+
+    is_top = bool(info["is_top"]) if info else False
+    max_here = max_days_for(is_top)
+    load = {r["visit_day"].strip(): r["visits"] for r in rows if r["visit_day"]}
+
+    current_days = sorted((c["visit_day"].strip() for c in current),
+                          key=lambda d: WORK_DAYS.index(d)
+                          if d in WORK_DAYS else 99)
+    full = [d for d, n in load.items() if n >= MAX_VISITS_PER_DAY]
+
+    return {
+        "success": True,
+        "agent": agent,
+        "pointCode": point_code,
+        "pointName": (info["point_name"] if info else "") or "—",
+        "isTop": is_top,
+        "maxDays": max_here,
+        "currentDays": current_days,
+        "workDays": list(WORK_DAYS),
+        # Загрузка без этой точки — её же день не должен считаться занятым
+        "dayLoad": load,
+        "fullDays": sorted(full),
+        # День, на котором точка уже стоит, оставить можно всегда: сама себе
+        # она загрузку не добавляет. Иначе у агента с забитой пятницей точку
+        # из этой пятницы нельзя было бы даже оставить на месте, добавив
+        # второй день — панель предлагала бы выбор, который сервер отвергает
+        "selectableDays": [d for d in WORK_DAYS
+                           if d not in full or d in current_days],
+        "maxVisitsPerDay": MAX_VISITS_PER_DAY,
+    }
+
+
+async def set_visit_days(agent: str, point_code: str, days: list,
+                         by_login: str = "") -> dict:
+    """
+    Заменяет дни визита агента на точке.
+
+    Открепить и прикрепить заново супервайзер не может — прикрепляет только
+    сам агент через бота. Поэтому перенести точку с перегруженного дня на
+    свободный без этой операции было нечем.
+
+    Старые дни удаляются и новые пишутся одной транзакцией: иначе при сбое
+    точка осталась бы вообще без дня, и агент просто перестал бы на неё
+    ездить, ничего не заметив.
+    """
+    agent = (agent or "").strip().upper()
+    days = [d.strip() for d in (days or []) if d and d.strip()]
+
+    if not agent or not point_code:
+        return {"success": False, "message": "Не указан агент или точка"}
+    if not days:
+        return {"success": False, "message": "Не выбран ни один день визита"}
+
+    repeated = [d for d in set(days) if days.count(d) > 1]
+    if repeated:
+        return {"success": False,
+                "message": f"День выбран дважды: {', '.join(repeated)}"}
+
+    unknown = [d for d in days if d not in WORK_DAYS]
+    if unknown:
+        return {"success": False,
+                "message": f"Неизвестный день: {', '.join(unknown)}"}
+
+    opts = await day_options(agent, point_code)
+    if not opts.get("success"):
+        return opts
+
+    if len(days) > opts["maxDays"]:
+        limit_text = (f"не больше {opts['maxDays']} дней" if opts["maxDays"] > 1
+                      else "ровно один день")
+        return {"success": False,
+                "message": f"Выбрано дней: {len(days)}. На эту точку — {limit_text}."}
+
+    overloaded = [d for d in days if d not in opts["selectableDays"]]
+    if overloaded:
+        return {"success": False,
+                "message": f"У {agent} в {', '.join(overloaded)} уже "
+                           f"{MAX_VISITS_PER_DAY} ТРТ. Выберите другой день."}
+
+    old_days = opts["currentDays"]
+    if sorted(days) == sorted(old_days):
+        return {"success": False, "message": "Это те же самые дни"}
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT max(point_name) AS point_name, max(agent_brand) AS brand
+                      FROM attachments
+                     WHERE point_code = $1 AND upper(agent) = $2
+                    """,
+                    point_code, agent,
+                )
+                point_name = (row["point_name"] if row else None) or opts["pointName"]
+                brand = (row["brand"] if row else None) or agent_brand(agent)
+
+                await conn.execute(
+                    "DELETE FROM attachments WHERE point_code = $1 AND upper(agent) = $2",
+                    point_code, agent,
+                )
+                await conn.executemany(
+                    """
+                    INSERT INTO attachments
+                        (point_code, point_name, agent_brand, agent, visit_day)
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    [(point_code, point_name, brand, agent, d) for d in days],
+                )
+                # В журнал пишем и смену дня: агент спросит, почему маршрут
+                # изменился, и ответ должен быть в базе. Отдающий и
+                # принимающий здесь один и тот же человек
+                await conn.execute(
+                    """
+                    INSERT INTO transfer_log
+                        (point_code, point_name, from_agent, to_agent, days, by_login)
+                    VALUES ($1, $2, $3, $3, $4, $5)
+                    """,
+                    point_code, point_name, agent,
+                    f"{', '.join(old_days)} → {', '.join(days)}",
+                    (by_login or "").upper(),
+                )
+    except Exception as e:
+        return _db_error(e)
+
+    await _notify_day_change(agent, point_name, point_code,
+                             ", ".join(old_days), ", ".join(days))
+
+    return {"success": True,
+            "message": f"День визита изменён: {', '.join(old_days)} → {', '.join(days)}"}
+
+
+async def _notify_day_change(agent: str, point_name: str, point_code: str,
+                             old_days: str, new_days: str) -> None:
+    """Сообщает агенту, что день визита на точке изменился."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tg_id = await conn.fetchval(
+                "SELECT tg_id FROM users WHERE upper(login) = $1", agent)
+    except Exception:
+        logger.exception("Не удалось найти Telegram агента %s", agent)
+        return
+
+    if not tg_id:
+        return
+
+    await notify.notify_user(tg_id, (
+        "📅 ИЗМЕНЁН ДЕНЬ ВИЗИТА\n\n"
+        f"🏪 {point_name}\n"
+        f"🔢 Код: {point_code}\n\n"
+        f"Было: {old_days}\n"
+        f"Стало: {new_days}\n\n"
+        "Маршрут изменил супервайзер. Новый день уже виден "
+        "во вкладке «Мои точки»."
+    ))
+
+
 async def _notify_transfer(from_agent: str, to_agent: str, point_name: str,
                            point_code: str, old_days: str, new_days: str) -> None:
     """Сообщает обоим агентам о передаче точки."""
@@ -1147,6 +1357,30 @@ async def panel_set_point_top(token: str, point_code: str, is_top: bool) -> dict
     if auth["isOperator"]:
         return {"success": False, "message": "Недостаточно прав"}
     return await set_point_top(point_code, is_top)
+
+
+async def panel_day_options(token: str, agent: str, point_code: str) -> dict:
+    """Какие дни можно поставить — для окна смены дня."""
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if auth["isOperator"]:
+        return {"success": False, "message": "Недостаточно прав"}
+    if not await _agent_allowed(auth, agent):
+        return {"success": False, "message": "Этот агент не в вашем подчинении"}
+    return await day_options(agent, point_code)
+
+
+async def panel_set_visit_days(token: str, agent: str, point_code: str,
+                               days: list) -> dict:
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if auth["isOperator"]:
+        return {"success": False, "message": "Недостаточно прав"}
+    if not await _agent_allowed(auth, agent):
+        return {"success": False, "message": "Этот агент не в вашем подчинении"}
+    return await set_visit_days(agent, point_code, days, by_login=auth["login"])
 
 
 async def panel_transfer_candidates(token: str, agent: str, point_code: str) -> dict:

@@ -171,6 +171,17 @@ async def handle_api(request: web.Request) -> web.Response:
                 payload.get("token", ""), payload.get("pointCode", ""),
                 bool(payload.get("isTop")))
 
+        # ---------- смена дня визита ----------
+        elif action == "panel_day_options":
+            result = await api.panel_day_options(
+                payload.get("token", ""), payload.get("agent", ""),
+                payload.get("pointCode", ""))
+
+        elif action == "panel_set_visit_days":
+            result = await api.panel_set_visit_days(
+                payload.get("token", ""), payload.get("agent", ""),
+                payload.get("pointCode", ""), payload.get("days", []))
+
         # ---------- передача точки другому агенту ----------
         elif action == "panel_transfer_candidates":
             result = await api.panel_transfer_candidates(
