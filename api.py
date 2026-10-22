@@ -221,31 +221,155 @@ async def list_brands() -> dict:
     }
 
 
-async def list_supervisors(search: str = "") -> dict:
-    """Все супервайзеры со сводкой — для общего входа."""
+# Нарушения считаются одинаково на всех трёх уровнях — бренд,
+# супервайзер, агент. Если держать их тремя отдельными запросами, то
+# рано или поздно уровни разойдутся: внутри агента проблема есть, а в
+# бренде её нет, и доверять сводке станет нельзя. Поэтому определения
+# лежат здесь одним куском и подставляются в оба запроса
+_NARUSHENIYA_CTE = """
+    -- Дней на точке больше нормы. Норма зависит от точки:
+    -- ТОП — до трёх, обычная — один
+    too_many AS (
+        SELECT upper(a.agent) AS agent, a.point_code
+          FROM attachments a
+     LEFT JOIN client_base c ON c.point_code = a.point_code
+         WHERE a.agent IS NOT NULL
+         GROUP BY upper(a.agent), a.point_code, COALESCE(c.is_top, false)
+        HAVING count(*) > CASE WHEN COALESCE(c.is_top, false)
+                               THEN $2::int ELSE $3::int END
+    ),
+    -- На точке несколько агентов одного бренда (сетевые не в счёт)
+    same_brand AS (
+        SELECT a.point_code, upper(left(a.agent, 2)) AS brand
+          FROM attachments a
+     LEFT JOIN client_base c ON c.point_code = a.point_code
+         WHERE COALESCE(c.type, 'def') <> 'chain'
+           AND a.agent IS NOT NULL
+         GROUP BY a.point_code, upper(left(a.agent, 2))
+        HAVING count(DISTINCT upper(a.agent)) > 1
+    ),
+    -- Нагрузка по дням недели: день сверх нормы — тоже нарушение,
+    -- и по недельной сумме его не видно
+    po_dnyam AS (
+        SELECT upper(a.agent) AS agent, a.visit_day,
+               count(DISTINCT COALESCE(NULLIF(c.inn, ''), a.point_code)) AS n
+          FROM attachments a
+     LEFT JOIN client_base c ON c.point_code = a.point_code
+         WHERE a.agent IS NOT NULL
+           AND a.visit_day IS NOT NULL AND a.visit_day <> ''
+         GROUP BY upper(a.agent), a.visit_day
+    ),
+    -- Сводка по агенту: сколько проблемных точек и перебран ли день
+    po_agentam AS (
+        SELECT upper(u.login) AS agent,
+               upper(u.supervisor) AS supervisor,
+               count(DISTINCT t.point_code) FILTER (
+                   WHERE (t.point_code, upper(left(u.login, 2))) IN
+                         (SELECT point_code, brand FROM same_brand)
+                      OR (upper(u.login), t.point_code) IN
+                         (SELECT agent, point_code FROM too_many)
+               ) AS problems,
+               COALESCE((SELECT max(d.n) FROM po_dnyam d
+                          WHERE d.agent = upper(u.login)), 0) AS peak
+          FROM users u
+     LEFT JOIN attachments t ON upper(t.agent) = upper(u.login)
+         WHERE COALESCE(u.role, 'agent') = 'agent'
+         GROUP BY u.login, u.supervisor
+    )
+"""
+
+
+async def list_supervisors(search: str = "", brand: str = "") -> dict:
+    """
+    Супервайзеры со сводкой нарушений — для общего входа и для оператора.
+
+    Нарушения нужны прямо здесь: без них список — просто перечень имён,
+    и чтобы понять, где разбираться, пришлось бы открывать каждого.
+    """
     pattern = f"%{(search or '').strip().upper()}%"
+    brand = (brand or "").strip().upper()
+
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """
-                SELECT upper(u.login)                    AS supervisor,
-                       u.brand                           AS brand,
-                       count(DISTINCT a.login)           AS agents
+                f"""
+                WITH {_NARUSHENIYA_CTE}
+                SELECT upper(u.login)              AS supervisor,
+                       u.brand                     AS brand,
+                       count(pa.agent)             AS agents,
+                       COALESCE(sum(pa.problems), 0)                  AS problems,
+                       count(*) FILTER (WHERE pa.problems > 0)        AS bad_agents,
+                       count(*) FILTER (WHERE pa.peak > $4::int)      AS over_agents
                   FROM users u
-             LEFT JOIN users a ON upper(a.supervisor) = upper(u.login)
+             LEFT JOIN po_agentam pa ON pa.supervisor = upper(u.login)
                  WHERE u.role = 'supervisor'
                    AND upper(u.login) LIKE $1
+                   AND ($5 = '' OR upper(COALESCE(u.brand, '')) = $5)
                  GROUP BY u.login, u.brand
                  ORDER BY u.brand, u.login
                 """,
-                pattern,
+                pattern, MAX_VISIT_DAYS, MAX_VISIT_DAYS_REGULAR,
+                MAX_VISITS_PER_DAY, brand,
             )
     except Exception as e:
         return _db_error(e)
 
     return {"success": True, "supervisors": [
-        {"supervisor": r["supervisor"], "brand": r["brand"], "agents": r["agents"]}
+        {"supervisor": r["supervisor"], "brand": r["brand"],
+         "agents": r["agents"],
+         # Проблемных точек всего у команды. int обязателен: sum() в
+         # Postgres возвращает numeric, а Decimal в JSON не уходит —
+         # ответ падал бы уже на отдаче, а не на запросе
+         "problems": int(r["problems"] or 0),
+         # Сколько агентов задеты — по этому числу понятно, разовая это
+         # беда или у всей команды
+         "badAgents": r["bad_agents"],
+         # Сколько агентов перебрали норму дня
+         "overAgents": r["over_agents"]}
+        for r in rows
+    ]}
+
+
+async def list_brands(search: str = "") -> dict:
+    """
+    Бренды со сводкой — первый экран цепочки «бренд → супервайзер →
+    агент → точка».
+
+    Бренд берётся из карточки супервайзера, а не из первых двух букв
+    логина: у супервайзера бренд записан явно, и один бренд может
+    вести несколько человек.
+    """
+    pattern = f"%{(search or '').strip().upper()}%"
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                WITH {_NARUSHENIYA_CTE}
+                SELECT upper(COALESCE(u.brand, '—'))     AS brand,
+                       count(DISTINCT upper(u.login))    AS supervisors,
+                       count(pa.agent)                   AS agents,
+                       COALESCE(sum(pa.problems), 0)              AS problems,
+                       count(*) FILTER (WHERE pa.problems > 0)    AS bad_agents,
+                       count(*) FILTER (WHERE pa.peak > $4::int)  AS over_agents
+                  FROM users u
+             LEFT JOIN po_agentam pa ON pa.supervisor = upper(u.login)
+                 WHERE u.role = 'supervisor'
+                   AND upper(COALESCE(u.brand, '')) LIKE $1
+                 GROUP BY upper(COALESCE(u.brand, '—'))
+                 ORDER BY problems DESC, brand
+                """,
+                pattern, MAX_VISIT_DAYS, MAX_VISIT_DAYS_REGULAR,
+                MAX_VISITS_PER_DAY,
+            )
+    except Exception as e:
+        return _db_error(e)
+
+    return {"success": True, "brands": [
+        {"brand": r["brand"], "supervisors": r["supervisors"],
+         "agents": r["agents"], "problems": int(r["problems"] or 0),
+         "badAgents": r["bad_agents"], "overAgents": r["over_agents"]}
         for r in rows
     ]}
 
@@ -1274,6 +1398,36 @@ async def _check_panel(login_value: str, password: str) -> dict:
     }
 
 
+def _deny_operator(auth: dict) -> dict | None:
+    """
+    Отказ оператору на любой правке.
+
+    Проверка явная и в каждом изменяющем действии, а не выведенная из
+    того, что у оператора нет подчинённых агентов. Раньше его не
+    пускали именно так — _agent_allowed возвращал False, — и стоило
+    открыть оператору просмотр чужих агентов, как вместе с просмотром
+    открылись бы и открепление с переносом.
+    """
+    if auth.get("isOperator"):
+        return {"success": False,
+                "message": "Оператор может только смотреть — "
+                           "изменения делает супервайзер"}
+    return None
+
+
+async def _read_allowed(auth: dict, agent: str) -> bool:
+    """
+    Можно ли СМОТРЕТЬ этого агента.
+
+    Оператору видны все: он разбирает заявки со всех брендов, и чтобы
+    понять заявку, ему нужно видеть, как у агента устроен маршрут.
+    На правки это не распространяется — там _deny_operator.
+    """
+    if auth.get("isOperator"):
+        return True
+    return await _agent_allowed(auth, agent)
+
+
 async def _agent_allowed(auth: dict, agent: str) -> bool:
     """Свой ли это агент для вошедшего супервайзера."""
     if auth.get("isAdmin"):
@@ -1322,20 +1476,36 @@ async def panel_start(token: str) -> dict:
     return result
 
 
-async def panel_supervisors(token: str, search: str = "") -> dict:
+async def panel_brands(token: str, search: str = "") -> dict:
+    """Бренды со сводкой — первый шаг обзора для оператора и админа."""
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if not auth["isAdmin"]:
+    # Супервайзеру этот экран не нужен: он видит только своих агентов,
+    # и выбирать ему не из чего
+    if not (auth["isAdmin"] or auth["isOperator"]):
         return {"success": False, "message": "Недостаточно прав"}
-    return await list_supervisors(search)
+    return await list_brands(search)
+
+
+async def panel_supervisors(token: str, search: str = "",
+                            brand: str = "") -> dict:
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if not (auth["isAdmin"] or auth["isOperator"]):
+        return {"success": False, "message": "Недостаточно прав"}
+    return await list_supervisors(search, brand)
 
 
 async def panel_agents(token: str, supervisor: str = "", search: str = "") -> dict:
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    target = supervisor if auth["isAdmin"] else auth["supervisor"]
+    # Супервайзер всегда смотрит свою команду, кто бы ни был указан в
+    # запросе. Админ и оператор — ту, которую выбрали на прошлом экране
+    target = (supervisor if (auth["isAdmin"] or auth["isOperator"])
+              else auth["supervisor"])
     return await list_agents(target, search)
 
 
@@ -1343,7 +1513,7 @@ async def panel_agent_points(token: str, agent: str, search: str = "") -> dict:
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if not await _agent_allowed(auth, agent):
+    if not await _read_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
     return await agent_points(agent, "", search)
 
@@ -1352,15 +1522,23 @@ async def panel_point_details(token: str, point_code: str, agent: str = "") -> d
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if agent and not await _agent_allowed(auth, agent):
+    if agent and not await _read_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
-    return await point_details(point_code, agent)
+    result = await point_details(point_code, agent)
+    if result.get("success"):
+        # Панель по этому признаку прячет кнопки правок: кнопка, которая
+        # всегда отвечает отказом, — это обещание, которого нет
+        result["readOnly"] = bool(auth["isOperator"])
+    return result
 
 
 async def panel_unattach_days(token: str, agent: str, point_code: str, days: list) -> dict:
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
     if not await _agent_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
     return await unattach_days(agent, point_code, days)
@@ -1370,6 +1548,9 @@ async def panel_unattach_agent(token: str, agent: str, point_code: str) -> dict:
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
     # Чужого агента супервайзер может открепить только на точке, где стоит
     # кто-то из его подчинённых
     if not auth["isAdmin"] and not await _agent_allowed(auth, agent):
@@ -1388,6 +1569,11 @@ async def panel_set_point_type(token: str, point_code: str, point_type: str) -> 
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
+    # Проверки роли здесь не было совсем: с действующим пропуском тип
+    # точки мог поменять кто угодно, включая оператора
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
     return await set_point_type(point_code, point_type)
 
 
@@ -1395,8 +1581,9 @@ async def panel_set_point_top(token: str, point_code: str, is_top: bool) -> dict
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if auth["isOperator"]:
-        return {"success": False, "message": "Недостаточно прав"}
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
     return await set_point_top(point_code, is_top)
 
 
@@ -1405,8 +1592,9 @@ async def panel_day_options(token: str, agent: str, point_code: str) -> dict:
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if auth["isOperator"]:
-        return {"success": False, "message": "Недостаточно прав"}
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
     if not await _agent_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
     return await day_options(agent, point_code)
@@ -1417,8 +1605,9 @@ async def panel_set_visit_days(token: str, agent: str, point_code: str,
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if auth["isOperator"]:
-        return {"success": False, "message": "Недостаточно прав"}
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
     if not await _agent_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
     return await set_visit_days(agent, point_code, days, by_login=auth["login"])
@@ -1429,8 +1618,9 @@ async def panel_transfer_candidates(token: str, agent: str, point_code: str) -> 
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if auth["isOperator"]:
-        return {"success": False, "message": "Недостаточно прав"}
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
     if not await _agent_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
 
@@ -1451,8 +1641,9 @@ async def panel_transfer_point(token: str, point_code: str, from_agent: str,
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if auth["isOperator"]:
-        return {"success": False, "message": "Недостаточно прав"}
+    denied = _deny_operator(auth)
+    if denied:
+        return denied
 
     if not await _agent_allowed(auth, from_agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}

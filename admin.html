@@ -539,9 +539,36 @@
 </div>
 
 <!-- ================= ВЫБОР БРЕНДА ================= -->
+<!-- ================= БРЕНДЫ ================= -->
+<div id="screen-brandpick" class="hidden">
+  <div class="wrap">
+    <div class="sticky" id="bp-sticky">
+      <div class="top">
+        <div>
+          <div class="top-title">Бренды</div>
+          <div class="top-sub" id="bp-sub">Выберите бренд</div>
+        </div>
+        <div class="head-actions">
+          <button class="logout" id="pwd-btn-bp">Сменить пароль</button>
+          <button class="logout" id="logout-bp">Выйти</button>
+        </div>
+      </div>
+
+      <div class="who-row">
+        <span class="login-chip" id="who-bp">—</span>
+      </div>
+
+      <div class="nav" data-nav></div>
+    </div>
+
+    <div id="brandpick-list"></div>
+  </div>
+</div>
+
 <div id="screen-brands" class="hidden">
   <div class="wrap">
     <div class="sticky" id="sv-sticky">
+    <button class="back hidden" id="back-brandpick">← Все бренды</button>
     <div class="top">
       <div>
         <div class="top-title">Супервайзеры</div>
@@ -555,7 +582,10 @@
 
     <div class="who-row">
       <span class="login-chip" id="who-brands">—</span>
+      <span class="brand-chip hidden" id="sv-brand-chip">—</span>
     </div>
+
+    <div class="nav" data-nav></div>
 
     <div class="search">
       <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
@@ -850,7 +880,8 @@ async function call(action, extra) {
   return data;
 }
 
-const SCREENS = ["screen-login", "screen-brands", "screen-agents", "screen-points",
+const SCREENS = ["screen-login", "screen-brandpick", "screen-brands",
+                 "screen-agents", "screen-points",
                  "screen-requests", "screen-archive"];
 
 function show(id) {
@@ -952,6 +983,7 @@ async function doLogin() {
   // Логин виден постоянно: админов несколько, и важно понимать, под кем сидишь
   document.getElementById("who-agents").textContent = auth.login.toUpperCase();
   document.getElementById("who-brands").textContent = auth.login.toUpperCase();
+  document.getElementById("who-bp").textContent = auth.login.toUpperCase();
 
   enterPanel(r);
 }
@@ -968,6 +1000,7 @@ function enterPanel(r) {
   document.getElementById("who-agents").textContent = who;
   document.getElementById("who-brands").textContent = who;
   document.getElementById("who-req").textContent = who;
+  document.getElementById("who-bp").textContent = who;
 
   // Оператору показывать нечего, кроме заявок и архива: агентов и точек
   // он не правит
@@ -1059,10 +1092,98 @@ async function savePassword() {
 }
 
 // ---------------- ВЫБОР СУПЕРВАЙЗЕРА (общий вход) ----------------
+
+// ---------------- БРЕНДЫ ----------------
+// Первый шаг обзора. Цифры нарушений здесь не украшение: без них
+// пришлось бы открывать каждый бренд, чтобы понять, где разбираться
+let pickedBrand = "";
+
+async function openBrands() {
+  renderNav("brands");
+  document.getElementById("brandpick-list").innerHTML =
+    '<div class="loading">Загружаю бренды...</div>';
+  show("screen-brandpick");
+
+  const r = await call("panel_brands", {}).catch(() => null);
+  const box = document.getElementById("brandpick-list");
+  if (!r || !r.success) {
+    box.innerHTML = `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+    return;
+  }
+  renderBrands(r.brands || []);
+}
+
+function renderBrands(list) {
+  const box = document.getElementById("brandpick-list");
+  const bad = list.filter(b => b.problems || b.overAgents).length;
+  document.getElementById("bp-sub").textContent =
+    `${list.length} ${plural(list.length, "бренд", "бренда", "брендов")}` +
+    (bad ? `, в ${bad} есть ошибки` : ", ошибок нет");
+
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">Брендов не найдено.</div>';
+    return;
+  }
+
+  box.innerHTML = list.map(b => `
+    <button class="card ${b.problems || b.overAgents ? "problem" : ""}"
+            data-brand="${b.brand}">
+      <div class="avatar ${b.agents ? "" : "quiet"}">${b.brand}</div>
+      <div class="grow">
+        <div class="name">${b.brand}
+          ${b.problems
+            ? `<span class="badge problem">${b.problems} ${plural(b.problems, "ошибка", "ошибки", "ошибок")}</span>`
+            : ""}
+        </div>
+        <div class="meta">${b.supervisors} ${plural(b.supervisors, "супервайзер", "супервайзера", "супервайзеров")} ·
+          ${b.agents} ${plural(b.agents, "агент", "агента", "агентов")}${
+          b.badAgents
+            ? ` · <b class="over-mark">у ${b.badAgents} ${plural(b.badAgents, "агента", "агентов", "агентов")} ошибки</b>`
+            : ""
+        }${
+          b.overAgents
+            ? ` · <b class="over-mark">${b.overAgents} сверх нормы дня</b>`
+            : ""
+        }</div>
+      </div>
+      <div class="chev">›</div>
+    </button>
+  `).join("");
+
+  box.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => openBrandSupervisors(el.dataset.brand));
+  });
+}
+
+async function openBrandSupervisors(brand) {
+  pickedBrand = brand || "";
+  renderNav("brands");
+  document.getElementById("sv-search").value = "";
+  document.getElementById("back-brandpick").classList.remove("hidden");
+  const chip = document.getElementById("sv-brand-chip");
+  chip.textContent = pickedBrand;
+  chip.classList.remove("hidden");
+  document.getElementById("brands-list").innerHTML =
+    '<div class="loading">Загружаю супервайзеров...</div>';
+  show("screen-brands");
+
+  const r = await call("panel_supervisors", { brand: pickedBrand, search: "" })
+    .catch(() => null);
+  if (r && r.success) renderSupervisors(r.supervisors || []);
+  else document.getElementById("brands-list").innerHTML =
+        `<div class="empty">${r ? r.message : "Сервер не отвечает"}</div>`;
+}
+
+document.getElementById("back-brandpick").addEventListener("click", openBrands);
+document.getElementById("logout-bp").addEventListener("click", doLogout);
+document.getElementById("pwd-btn-bp").addEventListener("click", openPassword);
+
 function renderSupervisors(list) {
   const box = document.getElementById("brands-list");
+  const bad = list.filter(sv => sv.problems || sv.overAgents).length;
   document.getElementById("sv-sub").textContent =
-    `${list.length} ${plural(list.length, "супервайзер", "супервайзера", "супервайзеров")}`;
+    `${list.length} ${plural(list.length, "супервайзер", "супервайзера", "супервайзеров")}` +
+    (bad ? `, у ${bad} есть ошибки` : ", ошибок нет");
 
   if (!list.length) {
     box.innerHTML = '<div class="empty">Супервайзеров не найдено.</div>';
@@ -1070,11 +1191,24 @@ function renderSupervisors(list) {
   }
 
   box.innerHTML = list.map(sv => `
-    <button class="card" data-sv="${sv.supervisor}" data-brand="${sv.brand || ""}">
-      <div class="avatar">${sv.brand || "—"}</div>
+    <button class="card ${sv.problems || sv.overAgents ? "problem" : ""}"
+            data-sv="${sv.supervisor}" data-brand="${sv.brand || ""}">
+      <div class="avatar ${sv.agents ? "" : "quiet"}">${sv.brand || "—"}</div>
       <div class="grow">
-        <div class="name">${sv.supervisor}</div>
-        <div class="meta">${sv.agents} ${plural(sv.agents, "агент", "агента", "агентов")}</div>
+        <div class="name">${sv.supervisor}
+          ${sv.problems
+            ? `<span class="badge problem">${sv.problems} ${plural(sv.problems, "ошибка", "ошибки", "ошибок")}</span>`
+            : ""}
+        </div>
+        <div class="meta">${sv.agents} ${plural(sv.agents, "агент", "агента", "агентов")}${
+          sv.badAgents
+            ? ` · <b class="over-mark">у ${sv.badAgents} ошибки</b>`
+            : ""
+        }${
+          sv.overAgents
+            ? ` · <b class="over-mark">${sv.overAgents} сверх нормы дня</b>`
+            : ""
+        }</div>
       </div>
       <div class="chev">›</div>
     </button>
@@ -1090,7 +1224,10 @@ document.getElementById("sv-search").addEventListener("input", function () {
   clearTimeout(svTimer);
   const value = this.value;
   svTimer = setTimeout(async () => {
-    const r = await call("panel_supervisors", { search: value }).catch(() => null);
+    // Бренд передаём всегда: иначе поиск внутри бренда молча
+    // выводил бы людей из других брендов
+    const r = await call("panel_supervisors",
+                         { search: value, brand: pickedBrand }).catch(() => null);
     if (r && r.success) renderSupervisors(r.supervisors || []);
   }, 250);
 });
@@ -1099,7 +1236,8 @@ async function openSupervisor(supervisor, brand) {
   auth.supervisor = supervisor;
   document.getElementById("brand-chip").textContent = brand || "";
   document.getElementById("agent-search").value = "";
-  document.getElementById("back-brands").classList.toggle("hidden", !auth.isAdmin);
+  document.getElementById("back-brands")
+    .classList.toggle("hidden", !(auth.isAdmin || auth.isOperator));
   document.getElementById("agents-list").innerHTML = '<div class="loading">Загружаю агентов...</div>';
   document.getElementById("agents-sub").textContent = supervisor;
   show("screen-agents");
@@ -1326,9 +1464,20 @@ function renderRules(r) {
   topFact.className = "rule-fact";
 
   // Значки в свёрнутой шапке: даже с закрытыми правилами перегруз
-  // должен быть виден — ради него панель и открывают
+  // должен быть виден — ради него панель и открывают.
+  //
+  // День считается отдельно от недели. Неделя может укладываться в
+  // норму, а один день быть забит вдвое — и значок «в норме» рядом с
+  // красной цифрой дня противоречил бы сам себе
   const flags = [];
+  const peak = days.reduce(
+    (best, d) => ((load[d] || 0) > (load[best] || 0) ? d : best), days[0]);
+  const peakN = load[peak] || 0;
   if (over) flags.push(`<span class="bad">+${week - cap} ТРТ</span>`);
+  if (peakN > maxDay) {
+    const short = (DAYS.find(x => x[1] === peak) || [peak.slice(0, 2)])[0];
+    flags.push(`<span class="bad">${short} ${peakN}</span>`);
+  }
   if (top) flags.push(`<span>ТОП ${top}</span>`);
   if (!flags.length) flags.push("<span>в норме</span>");
   document.getElementById("rules-flags").innerHTML = flags.join("");
@@ -1365,6 +1514,10 @@ let pendingCount = 0;
 function renderNav(active) {
   const tabs = [];
   if (auth.isAdmin) tabs.push(["supervisors", "Супервайзеры"]);
+  // Оператору — обзор по цепочке «бренд → супервайзер → агент → точка».
+  // Только смотреть: разбирая заявку, он должен видеть, как у агента
+  // устроен маршрут, но менять его — дело супервайзера
+  if (auth.isOperator) tabs.push(["brands", "Обзор"]);
   tabs.push(["requests", "Заявки"]);
   tabs.push(["archive", "Архив"]);
 
@@ -1385,7 +1538,12 @@ function renderNav(active) {
 function openTab(tab) {
   if (tab === "supervisors") {
     renderNav("supervisors");
+    pickedBrand = "";
+    document.getElementById("back-brandpick").classList.add("hidden");
+    document.getElementById("sv-brand-chip").classList.add("hidden");
     show("screen-brands");
+  } else if (tab === "brands") {
+    openBrands();
   } else if (tab === "requests") {
     openRequests();
   } else {
@@ -1748,6 +1906,10 @@ async function openFix(pointCode, keep) {
 
   const hasDays  = r.problems.includes("days");
   const hasBrand = r.problems.includes("brand");
+  // Оператору показываем разбор целиком, но без кнопок правок. Признак
+  // берём из ответа сервера: он же и откажет, если кнопку всё-таки
+  // нажмут в обход интерфейса
+  const readOnly = !!r.readOnly;
   document.getElementById("fix-title").textContent =
     hasDays ? "Лишние дни визита" : hasBrand ? "Несколько агентов одного бренда" : "Разбор точки";
 
@@ -1768,15 +1930,17 @@ async function openFix(pointCode, keep) {
     over.forEach(a => {
       html += `<p style="margin:0 0 8px; font-size:13.5px; color:#5A6478;">
                  У <b>${a.agent}</b> ${a.dayCount} ${plural(a.dayCount, "день", "дня", "дней")}
-                 вместо ${r.maxDays}. Отметьте, какие дни снять:</p>
+                 вместо ${r.maxDays}.${readOnly ? "" : " Отметьте, какие дни снять:"}</p>
                <div data-days-for="${a.agent}" style="margin-bottom:10px;">` +
-        a.dayList.map(d => `
-          <label class="day-pick">
-            <input type="checkbox" value="${d}"> ${d}
-          </label>`).join("") +
-        `</div>
+        a.dayList.map(d => readOnly
+          ? `<div class="day-pick">${d}</div>`
+          : `<label class="day-pick">
+               <input type="checkbox" value="${d}"> ${d}
+             </label>`).join("") +
+        `</div>` +
+        (readOnly ? "" : `
          <button class="btn-danger" data-unattach-days="${a.agent}"
-                 style="width:100%; padding:11px;">Открепить отмеченные дни</button>`;
+                 style="width:100%; padding:11px;">Открепить отмеченные дни</button>`);
     });
   }
 
@@ -1793,14 +1957,15 @@ async function openFix(pointCode, keep) {
             <div class="name">${a.agent}${a.agent === currentAgent ? " · открыт сейчас" : ""}</div>
             <div class="meta">${a.days || "нет дней"}</div>
           </div>
-          <button class="btn-danger" data-unattach-agent="${a.agent}">Открепить</button>
+          ${readOnly ? "" :
+            `<button class="btn-danger" data-unattach-agent="${a.agent}">Открепить</button>`}
         </div>`;
     });
 
-    html += `<button class="btn" id="fix-chain" style="width:100%; margin-top:12px;">
+    html += (readOnly ? "" : `<button class="btn" id="fix-chain" style="width:100%; margin-top:12px;">
                🏬 Это сетевая точка
-             </button>
-             <p style="margin:8px 0 0; font-size:12px; color:#6B7688;">
+             </button>`) +
+            `<p style="margin:8px 0 0; font-size:12px; color:#6B7688;">
                У сетевой точки несколько агентов одного бренда — норма, и проблема исчезнет.
              </p>`;
   }
@@ -1809,7 +1974,18 @@ async function openFix(pointCode, keep) {
   // Ради этого блока окно и открывается теперь везде: чтобы снять агента
   // со 193 точек до 150, надо работать с обычными точками.
   const mine = (r.agents || []).find(a => a.agent === currentAgent);
-  if (mine) {
+  if (mine && readOnly) {
+    // Оператору — та же картина без рычагов. Строка нужна, чтобы не
+    // гадать, почему кнопок нет: их нет не из-за сбоя
+    html += `<hr style="border:none; border-top:1px solid #E3E9F2; margin:18px 0;">
+             <div class="norm-head">${currentAgent} на этой точке</div>
+             <p style="margin:0 0 4px; font-size:13.5px; color:#5A6478;">
+               Дни визита: <b>${mine.days || "нет дней"}</b>
+             </p>
+             <p style="margin:8px 0 0; font-size:12px; color:#6B7688;">
+               Маршрут меняет супервайзер — у оператора только просмотр.
+             </p>`;
+  } else if (mine) {
     if (hasDays || hasBrand) {
       html += '<hr style="border:none; border-top:1px solid #E3E9F2; margin:18px 0;">';
     }

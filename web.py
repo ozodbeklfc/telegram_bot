@@ -132,9 +132,14 @@ async def handle_api(request: web.Request) -> web.Response:
         elif action == "panel_start":
             result = await api.panel_start(payload.get("token", ""))
 
+        elif action == "panel_brands":
+            result = await api.panel_brands(
+                payload.get("token", ""), payload.get("search", ""))
+
         elif action == "panel_supervisors":
             result = await api.panel_supervisors(
-                payload.get("token", ""), payload.get("search", ""))
+                payload.get("token", ""), payload.get("search", ""),
+                payload.get("brand", ""))
 
         elif action == "panel_agents":
             result = await api.panel_agents(
