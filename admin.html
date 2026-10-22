@@ -297,12 +297,21 @@
   .day-filter button.on {
     background: var(--navy); border-color: var(--navy);
   }
-  /* Заполненный день в окне смены: виден, но нажать нельзя — иначе
-     непонятно, почему дня нет в списке */
+  /* Заполненный день в окне смены выделен рамкой, но нажимается:
+     запрет мешал бы разгружать именно перегруженный день */
+  .day-filter button.over { border-color: var(--red); background: #FFF6F6; }
   .day-filter button.off { opacity: .45; cursor: default; background: #F7F9FC; }
   .day-filter button.off:hover { border-color: var(--line); }
   .day-filter button.on .d { color: var(--ice); }
   .day-filter button.on .n { color: #fff; }
+  .day-filter button.on.over { background: var(--navy); border-color: var(--red); }
+
+  /* Предупреждение о переборе: не отказ, а цифра перед глазами */
+  .days-warn {
+    margin-top: 10px; padding: 9px 11px; border-radius: 9px;
+    background: #FFF6F6; border: 1px solid #F3C9C9;
+    font-size: 13px; line-height: 1.45; color: #8A2B2B;
+  }
 
   .list-info {
     font-size: 12.5px; color: var(--muted); padding: 0 2px 10px;
@@ -1128,7 +1137,8 @@ function renderAgents(agents) {
   const list = document.getElementById("agents-list");
   const sub = document.getElementById("agents-sub");
 
-  const withProblems = agents.filter(a => a.problems > 0).length;
+  const withProblems = agents.filter(
+    a => a.problems > 0 || a.overBy || a.dayOverBy).length;
   sub.textContent = (auth.supervisor ? auth.supervisor + " · " : "") +
                     `${agents.length} ${plural(agents.length, "агент", "агента", "агентов")}` +
                     (withProblems ? `, у ${withProblems} есть проблемы` : ", проблем нет");
@@ -1139,7 +1149,7 @@ function renderAgents(agents) {
   }
 
   list.innerHTML = agents.map(a => `
-    <button class="card ${a.problems || a.overBy ? "problem" : ""}" data-agent="${a.agent}">
+    <button class="card ${a.problems || a.overBy || a.dayOverBy ? "problem" : ""}" data-agent="${a.agent}">
       <div class="avatar ${a.points ? "" : "quiet"}">${initials(a.agent)}</div>
       <div class="grow">
         <div class="name">${a.agent}
@@ -1149,6 +1159,13 @@ function renderAgents(agents) {
           ${a.visits} ТРТ в неделю${
           a.overBy
             ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>`
+            : ""
+        }${
+          // Неделя может быть в норме, а один день забит вдвое. С тех пор
+          // как смена дня перестала упираться в норму, это единственное
+          // место, где такой перекос виден без открытия агента
+          a.dayOverBy
+            ? ` · <b class="over-mark">${a.peakDay}: ${a.peakCount} ТРТ</b>`
             : ""
         }</div>
       </div>
@@ -1912,6 +1929,10 @@ const daysOverlay = document.getElementById("days-overlay");
 let pickedDays = [];
 let startDays = [];
 let daysMax = 1;
+// Нагрузка по дням без этой точки и норма дня — нужны, чтобы показать,
+// сколько станет в выбранном дне, не переспрашивая сервер на каждый клик
+let daysLoad = {};
+let daysNorm = 36;
 
 document.getElementById("days-cancel").addEventListener("click", closeDays);
 daysOverlay.addEventListener("click", e => {
@@ -1951,6 +1972,8 @@ async function openDays(details) {
   }
 
   daysMax = r.maxDays;
+  daysLoad = r.dayLoad || {};
+  daysNorm = r.maxVisitsPerDay || 36;
   pickedDays = (r.currentDays || []).slice();
   startDays = pickedDays.slice();
 
@@ -1968,25 +1991,24 @@ async function openDays(details) {
     <div class="day-filter" id="days-pick">
       ${(r.workDays || []).map(d => {
         const n = (r.dayLoad || {})[d] || 0;
-        // Закрыт тот день, который не вернул сервер в selectableDays.
-        // Свой текущий день закрытым не бывает, даже если он забит:
-        // точка уже в нём стоит и сама себе загрузку не добавляет
-        const full = !(r.selectableDays || r.workDays || []).includes(d);
-        const here = (r.currentDays || []).includes(d);
+        // Заполненный день помечен, но нажать его можно. Запрет здесь
+        // означал бы, что перегруженный день нельзя разгрузить, пока он
+        // не разгружен: чтобы увести точку на четверг, в четверге должно
+        // быть место, а места нет — и супервайзер идёт по цепочке
+        const full = n >= daysNorm;
         const on = pickedDays.includes(d);
         const short = (DAYS.find(x => x[1] === d) || [d.slice(0, 2)])[0];
-        const hint = full ? "день заполнен"
-                   : (here && n >= (r.maxVisitsPerDay || 36)
-                      ? "день заполнен другими точками, но эту можно оставить"
-                      : d);
+        const hint = full
+          ? `${d}: ${n} ТРТ — норма дня уже выбрана, но выбрать можно`
+          : `${d}: ${n} ТРТ`;
         return `<button type="button" data-pick="${d}"
-                        class="${on ? "on" : ""} ${full ? "off" : ""}"
-                        ${full ? "disabled" : ""}
+                        class="${on ? "on" : ""} ${full ? "over" : ""}"
                         title="${hint}">
                   <span class="d">${short}</span><span class="n">${n}</span>
                 </button>`;
       }).join("")}
-    </div>`;
+    </div>
+    <div id="days-warn" class="days-warn hidden"></div>`;
 
   body.querySelectorAll("[data-pick]").forEach(b => {
     b.addEventListener("click", () => {
@@ -2007,11 +2029,33 @@ async function openDays(details) {
       body.querySelectorAll("[data-pick]").forEach(x => {
         x.classList.toggle("on", pickedDays.includes(x.dataset.pick));
       });
+      showDaysWarning();
       syncDaysSave();
     });
   });
 
+  showDaysWarning();
   syncDaysSave();
+}
+
+
+// Сколько станет в выбранных днях и не выше ли это нормы. Не запрет,
+// а цифра перед глазами: решение принимает супервайзер
+function showDaysWarning() {
+  const box = document.getElementById("days-warn");
+  if (!box) return;
+  const over = pickedDays
+    .map(d => [d, (daysLoad[d] || 0) + 1])
+    .filter(([, n]) => n > daysNorm);
+  if (!over.length) {
+    box.classList.add("hidden");
+    box.textContent = "";
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML = "Норма дня будет превышена: "
+    + over.map(([d, n]) => `<b>${d} — ${n} ТРТ</b>`).join(", ")
+    + ` (норма ${daysNorm}). Сохранить всё равно можно.`;
 }
 
 // Кнопка включается, только когда набор дней реально изменился. Иначе
@@ -2042,7 +2086,12 @@ document.getElementById("days-save").addEventListener("click", async () => {
   }
 
   closeDays();
-  openFix(fixPoint, res.message);
+  // Предупреждение о переборе показываем вместе с результатом: перенос
+  // состоялся, но супервайзер должен увидеть, что норма дня превышена,
+  // сразу — а не через неделю в списке агентов
+  openFix(fixPoint, res.warning
+    ? `${res.message}. ${res.warning}`
+    : res.message);
 });
 
 // ---------------- ПЕРЕДАЧА ТОЧКИ ----------------
@@ -2219,7 +2268,18 @@ document.getElementById("point-search").addEventListener("input", function () {
   }, 250);
 });
 
-document.getElementById("back-btn").addEventListener("click", () => show("screen-agents"));
+// Возврат к списку перезапрашивает цифры, а не показывает прежние.
+// Супервайзер приходит сюда как раз после правок — перенёс день,
+// передал точку, открепил, — и список, собранный до них, показывал бы
+// нагрузку, которой уже нет. Особенно теперь, когда перенос дня может
+// увести день за норму: именно это и надо увидеть сразу
+document.getElementById("back-btn").addEventListener("click", () => {
+  show("screen-agents");
+  const search = document.getElementById("agent-search").value.trim();
+  call("panel_agents", { supervisor: auth.supervisor, search })
+    .then(r => { if (r && r.success) renderAgents(r.agents || []); })
+    .catch(() => {});
+});
 
 // Линия под закреплённой шапкой появляется, только когда под ней что-то
 // уехало: на нетронутой странице она выглядела бы лишней

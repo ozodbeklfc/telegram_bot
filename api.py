@@ -299,6 +299,26 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                        AND a.agent IS NOT NULL
                      GROUP BY a.point_code, upper(left(a.agent, 2))
                     HAVING count(DISTINCT upper(a.agent)) > 1
+                ),
+                -- Нагрузка по дням недели. Нужна с тех пор, как смена дня
+                -- перестала упираться в норму: перенести точку на занятый
+                -- день теперь можно, и перегруженный день обязан быть
+                -- виден в списке, а не только внутри карточки агента
+                po_dnyam AS (
+                    SELECT upper(a.agent) AS agent, a.visit_day,
+                           count(DISTINCT COALESCE(NULLIF(c.inn, ''),
+                                                   a.point_code)) AS n
+                      FROM attachments a
+                 LEFT JOIN client_base c ON c.point_code = a.point_code
+                     WHERE upper(a.agent) IN (SELECT agent FROM my_agents)
+                       AND a.visit_day IS NOT NULL AND a.visit_day <> ''
+                     GROUP BY upper(a.agent), a.visit_day
+                ),
+                -- Самый тяжёлый день каждого агента
+                pik AS (
+                    SELECT DISTINCT ON (agent) agent, visit_day, n
+                      FROM po_dnyam
+                     ORDER BY agent, n DESC, visit_day
                 )
                 -- Точки считаются по уникальным ИНН — тем же счётом, что
                 -- и лимит внутри карточки агента. Иначе в списке было бы
@@ -321,10 +341,13 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                                  (SELECT point_code, brand FROM same_brand)
                               OR (m.agent, t.point_code) IN
                                  (SELECT agent, point_code FROM too_many)
-                       ) AS problems
+                       ) AS problems,
+                       max(pk.visit_day) AS peak_day,
+                       COALESCE(max(pk.n), 0) AS peak_count
                   FROM my_agents m
              LEFT JOIN attachments t  ON upper(t.agent) = m.agent
              LEFT JOIN client_base cb ON cb.point_code = t.point_code
+             LEFT JOIN pik pk         ON pk.agent = m.agent
                  WHERE m.agent LIKE $2
                  GROUP BY m.agent
                  ORDER BY problems DESC, visits DESC, m.agent
@@ -350,6 +373,12 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                 # Перебор по визитам — отдельная беда, не «проблемная точка»:
                 # в списке он должен быть виден сразу, без открытия агента
                 "overBy": max(0, r["visits"] - capacity),
+                # Самый тяжёлый день и насколько он выше нормы. Неделя
+                # может быть в порядке, а один день — забит вдвое: по
+                # недельной сумме этого не видно
+                "peakDay": r["peak_day"] or "",
+                "peakCount": r["peak_count"],
+                "dayOverBy": max(0, r["peak_count"] - MAX_VISITS_PER_DAY),
             }
             for r in rows
         ],
@@ -924,13 +953,10 @@ async def day_options(agent: str, point_code: str) -> dict:
         "workDays": list(WORK_DAYS),
         # Загрузка без этой точки — её же день не должен считаться занятым
         "dayLoad": load,
+        # Дни, где норма уже выбрана. Выбрать такой день МОЖНО: это
+        # пометка для человека, а не запрет. Запрет здесь означал бы, что
+        # перегруженный день нельзя разгрузить, не разгрузив его сначала
         "fullDays": sorted(full),
-        # День, на котором точка уже стоит, оставить можно всегда: сама себе
-        # она загрузку не добавляет. Иначе у агента с забитой пятницей точку
-        # из этой пятницы нельзя было бы даже оставить на месте, добавив
-        # второй день — панель предлагала бы выбор, который сервер отвергает
-        "selectableDays": [d for d in WORK_DAYS
-                           if d not in full or d in current_days],
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
     }
 
@@ -976,11 +1002,22 @@ async def set_visit_days(agent: str, point_code: str, days: list,
         return {"success": False,
                 "message": f"Выбрано дней: {len(days)}. На эту точку — {limit_text}."}
 
-    overloaded = [d for d in days if d not in opts["selectableDays"]]
-    if overloaded:
-        return {"success": False,
-                "message": f"У {agent} в {', '.join(overloaded)} уже "
-                           f"{MAX_VISITS_PER_DAY} ТРТ. Выберите другой день."}
+    # Переполненный день больше не запрещён.
+    #
+    # Запрет здесь мешал ровно тому, ради чего смену дня и делали. Чтобы
+    # перенести точку на четверг, в четверге должно быть место; места нет,
+    # значит сначала убрать оттуда другую точку, а для неё нужен свободный
+    # день — и так по цепочке. Разгрузкой занимается супервайзер, то есть
+    # запрет стоял на пути у того, кто перегрузку и чинит.
+    #
+    # Норма осталась: её считают и показывают, но решение за человеком.
+    perebor = [(d, opts["dayLoad"].get(d, 0) + 1) for d in days
+               if opts["dayLoad"].get(d, 0) + 1 > MAX_VISITS_PER_DAY]
+    warning = ""
+    if perebor:
+        warning = (f"Норма дня превышена: "
+                   + ", ".join(f"{d} — {n} ТРТ" for d, n in perebor)
+                   + f" (норма {MAX_VISITS_PER_DAY}).")
 
     old_days = opts["currentDays"]
     if sorted(days) == sorted(old_days):
@@ -1033,7 +1070,11 @@ async def set_visit_days(agent: str, point_code: str, days: list,
                              ", ".join(old_days), ", ".join(days))
 
     return {"success": True,
-            "message": f"День визита изменён: {', '.join(old_days)} → {', '.join(days)}"}
+            "message": f"День визита изменён: {', '.join(old_days)} → {', '.join(days)}",
+            # Не отказ, а предупреждение: перенос состоялся, но норма дня
+            # превышена, и супервайзер должен это увидеть сразу, а не
+            # узнать через неделю из списка агентов
+            "warning": warning}
 
 
 async def _notify_day_change(agent: str, point_name: str, point_code: str,
