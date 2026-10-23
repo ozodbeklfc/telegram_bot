@@ -10,6 +10,7 @@
 которое bot.py уже умеет показывать пользователю.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -82,10 +83,21 @@ async def close_pool():
 
 
 def _db_error(e: Exception) -> dict:
+    """
+    Отказ по базе — одинаковым текстом для всех экранов.
+
+    Название класса ошибки в сообщении обязательно: у таймаута текста
+    нет вовсе, и на экране оставалось «не отвечает ()» — по таким
+    скобкам не понять, упал запрос или просто не дождался ответа.
+    """
     logger.exception("Ошибка при обращении к базе данных")
+    opisanie = str(e).strip() or type(e).__name__
+    if isinstance(e, asyncio.TimeoutError):
+        opisanie = f"запрос не уложился в {COMMAND_TIMEOUT} с"
     return {
         "success": False,
-        "message": f"База данных сейчас не отвечает ({e}). Попробуйте ещё раз через минуту.",
+        "message": f"База данных сейчас не отвечает: {opisanie}. "
+                   f"Попробуйте ещё раз через минуту.",
     }
 
 
@@ -227,26 +239,33 @@ async def list_brands() -> dict:
 # бренде её нет, и доверять сводке станет нельзя. Поэтому определения
 # лежат здесь одним куском и подставляются в оба запроса
 _NARUSHENIYA_CTE = """
-    -- Дней на точке больше нормы. Норма зависит от точки:
-    -- ТОП — до трёх, обычная — один
-    too_many AS (
-        SELECT upper(a.agent) AS agent, a.point_code
+    -- Одна строка на пару «агент + точка»: сколько дней занято, ТОП ли
+    -- точка, сетевая ли. Это единственный проход по attachments —
+    -- дальше считаем уже по этой заготовке.
+    --
+    -- Раньше здесь было четыре отдельных набора, и два из них
+    -- пересчитывали всю таблицу внутри подзапроса на каждого агента.
+    -- На трёх сотнях точек это незаметно, на ста пятидесяти тысячах
+    -- строк запрос переставал укладываться в отведённые ему секунды
+    po_tochkam AS (
+        SELECT upper(a.agent)                       AS agent,
+               a.point_code,
+               upper(left(a.agent, 2))              AS brand,
+               count(*)                             AS dnei,
+               COALESCE(max(c.is_top::int), 0) = 1  AS is_top,
+               COALESCE(max(c.type), 'def')         AS tip
           FROM attachments a
      LEFT JOIN client_base c ON c.point_code = a.point_code
-         WHERE a.agent IS NOT NULL
-         GROUP BY upper(a.agent), a.point_code, COALESCE(c.is_top, false)
-        HAVING count(*) > CASE WHEN COALESCE(c.is_top, false)
-                               THEN $2::int ELSE $3::int END
+         WHERE a.agent IS NOT NULL AND btrim(a.agent) <> ''
+         GROUP BY upper(a.agent), a.point_code, upper(left(a.agent, 2))
     ),
-    -- На точке несколько агентов одного бренда (сетевые не в счёт)
-    same_brand AS (
-        SELECT a.point_code, upper(left(a.agent, 2)) AS brand
-          FROM attachments a
-     LEFT JOIN client_base c ON c.point_code = a.point_code
-         WHERE COALESCE(c.type, 'def') <> 'chain'
-           AND a.agent IS NOT NULL
-         GROUP BY a.point_code, upper(left(a.agent, 2))
-        HAVING count(DISTINCT upper(a.agent)) > 1
+    -- Точка, где у одного бренда больше одного агента. Сетевые не в счёт
+    mnogo_agentov AS (
+        SELECT point_code, brand
+          FROM po_tochkam
+         WHERE tip <> 'chain'
+         GROUP BY point_code, brand
+        HAVING count(*) > 1
     ),
     -- Нагрузка по дням недели: день сверх нормы — тоже нарушение,
     -- и по недельной сумме его не видно
@@ -255,26 +274,35 @@ _NARUSHENIYA_CTE = """
                count(DISTINCT COALESCE(NULLIF(c.inn, ''), a.point_code)) AS n
           FROM attachments a
      LEFT JOIN client_base c ON c.point_code = a.point_code
-         WHERE a.agent IS NOT NULL
+         WHERE a.agent IS NOT NULL AND btrim(a.agent) <> ''
            AND a.visit_day IS NOT NULL AND a.visit_day <> ''
          GROUP BY upper(a.agent), a.visit_day
     ),
-    -- Сводка по агенту: сколько проблемных точек и перебран ли день
+    pik AS (
+        SELECT agent, max(n) AS peak FROM po_dnyam GROUP BY agent
+    ),
+    -- Сводка по агенту. Нарушение — либо дней на точке больше нормы
+    -- (у ТОП своя, у обычной своя), либо на точке второй агент бренда
+    svodka AS (
+        SELECT p.agent,
+               count(*) FILTER (
+                   WHERE p.dnei > CASE WHEN p.is_top
+                                       THEN $2::int ELSE $3::int END
+                      OR (p.point_code, p.brand) IN
+                         (SELECT point_code, brand FROM mnogo_agentov)
+               ) AS problems
+          FROM po_tochkam p
+         GROUP BY p.agent
+    ),
     po_agentam AS (
-        SELECT upper(u.login) AS agent,
-               upper(u.supervisor) AS supervisor,
-               count(DISTINCT t.point_code) FILTER (
-                   WHERE (t.point_code, upper(left(u.login, 2))) IN
-                         (SELECT point_code, brand FROM same_brand)
-                      OR (upper(u.login), t.point_code) IN
-                         (SELECT agent, point_code FROM too_many)
-               ) AS problems,
-               COALESCE((SELECT max(d.n) FROM po_dnyam d
-                          WHERE d.agent = upper(u.login)), 0) AS peak
+        SELECT upper(u.login)           AS agent,
+               upper(u.supervisor)      AS supervisor,
+               COALESCE(s.problems, 0)  AS problems,
+               COALESCE(k.peak, 0)      AS peak
           FROM users u
-     LEFT JOIN attachments t ON upper(t.agent) = upper(u.login)
+     LEFT JOIN svodka s ON s.agent = upper(u.login)
+     LEFT JOIN pik    k ON k.agent = upper(u.login)
          WHERE COALESCE(u.role, 'agent') = 'agent'
-         GROUP BY u.login, u.supervisor
     )
 """
 
