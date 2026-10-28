@@ -251,7 +251,10 @@ _NARUSHENIYA_CTE = """
         SELECT upper(a.agent)                       AS agent,
                a.point_code,
                upper(left(a.agent, 2))              AS brand,
-               count(*)                             AS dnei,
+               -- Именно DISTINCT: дубль строки — это не второй день
+               -- визита. Со счётом по строкам точка с продублированной
+               -- записью выглядела нарушением на ровном месте
+               count(DISTINCT a.visit_day)          AS dnei,
                COALESCE(max(c.is_top::int), 0) = 1  AS is_top,
                COALESCE(max(c.type), 'def')         AS tip
           FROM attachments a
@@ -437,8 +440,9 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                     -- Приведение к int обязательно: рядом стоит текстовый
                     -- параметр поиска, и без него драйвер решает, что
                     -- это тоже текст, и падает на «bigint > text»
-                    HAVING count(*) > CASE WHEN COALESCE(c.is_top, false)
-                                           THEN $3::int ELSE $4::int END
+                    HAVING count(DISTINCT a.visit_day)
+                           > CASE WHEN COALESCE(c.is_top, false)
+                                  THEN $3::int ELSE $4::int END
                 ),
                 -- на точке несколько агентов ТОГО ЖЕ бренда, что и наш агент
                 -- (чужие бренды к его проблемам отношения не имеют,
@@ -563,7 +567,10 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
                 """
                 WITH mine AS (
                     SELECT t.point_code,
-                           count(*)                              AS day_count,
+                           -- Счёт и перечень дней обязаны сходиться:
+                           -- строка «2 дня» под списком из одного дня
+                           -- означала бы дубль, а не второй день
+                           count(DISTINCT t.visit_day)           AS day_count,
                            string_agg(DISTINCT t.visit_day, ', ') AS days,
                            max(t.point_name)                     AS fallback_name
                       FROM attachments t
@@ -677,7 +684,7 @@ async def point_details(point_code: str, agent: str = "") -> dict:
                 """
                 SELECT upper(agent) AS agent,
                        string_agg(DISTINCT visit_day, ', ') AS days,
-                       count(*) AS day_count,
+                       count(DISTINCT visit_day) AS day_count,
                        max(point_name) AS point_name
                   FROM attachments
                  WHERE point_code = $1 AND agent IS NOT NULL
@@ -1008,6 +1015,12 @@ async def transfer_point(point_code: str, from_agent: str, to_agent: str,
                     INSERT INTO attachments
                         (point_code, point_name, agent_brand, agent, visit_day)
                     VALUES ($1, $2, $3, $4, $5)
+                    -- Повтор той же тройки «точка + агент + день» просто
+                    -- пропускаем. Проверки выше его и так не допускают,
+                    -- но при двух одновременных нажатиях обе проверки
+                    -- успевают пройти — и без этой строки второе
+                    -- нажатие показало бы агенту ошибку базы
+                    ON CONFLICT DO NOTHING
                     """,
                     [(point_code, point_name, agent_brand(to_agent), to_agent, d)
                      for d in days],
@@ -1199,6 +1212,12 @@ async def set_visit_days(agent: str, point_code: str, days: list,
                     INSERT INTO attachments
                         (point_code, point_name, agent_brand, agent, visit_day)
                     VALUES ($1, $2, $3, $4, $5)
+                    -- Повтор той же тройки «точка + агент + день» просто
+                    -- пропускаем. Проверки выше его и так не допускают,
+                    -- но при двух одновременных нажатиях обе проверки
+                    -- успевают пройти — и без этой строки второе
+                    -- нажатие показало бы агенту ошибку базы
+                    ON CONFLICT DO NOTHING
                     """,
                     [(point_code, point_name, brand, agent, d) for d in days],
                 )
@@ -2154,6 +2173,8 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
                 INSERT INTO attachments
                     (point_code, point_name, agent_brand, agent, visit_day)
                 VALUES ($1, $2, $3, $4, $5)
+                -- Повтор той же тройки пропускаем: см. пояснение выше
+                ON CONFLICT DO NOTHING
                 """,
                 [(point_code, point_name, brand, agent, day) for day in days],
             )
@@ -2399,13 +2420,15 @@ def _request_row(r) -> dict:
         "createdAt": r["created_at"].isoformat() if r["created_at"] else "",
         "doneAt": r["done_at"].isoformat() if r["done_at"] else "",
         "doneBy": r["done_by"] or "",
+        # Причина отказа. У проведённых заявок пусто
+        "reason": (r["reason"] or "") if "reason" in r.keys() else "",
         "details": dict(json.loads(r["payload"])) if r["payload"] else {},
     }
 
 
 REQUEST_COLUMNS = """
     id, kind, agent, point_code, point_name, inn, visit_day,
-    source, status, created_at, done_at, done_by, payload
+    source, status, created_at, done_at, done_by, reason, payload
 """
 
 
@@ -2474,6 +2497,137 @@ async def mark_request_done(request_id: int, operator_login: str) -> dict:
     return {"success": True, "message": "Заявка перенесена в архив", "id": row["id"]}
 
 
+async def reject_request(request_id: int, operator_login: str,
+                         reason: str) -> dict:
+    """
+    Отказывает в заявке с указанием причины.
+
+    Прикрепление снимается. Это не самоочевидно, поэтому вот почему:
+    точка ложится в attachments в момент, когда агент нажал кнопку, —
+    ещё до того, как оператор заявку увидел. Если при отказе её
+    оставить, в базе бота она есть, а в CRM её нет, потому что туда
+    заявку как раз не провели. Такое расхождение мы уже разбирали
+    неделю; второй раз заводить его не стоит.
+
+    Снятие пишется в журнал передач: через месяц будет видно, почему
+    точка пропала у агента, и что это отказ, а не чья-то ошибка.
+    """
+    try:
+        request_id = int(request_id)
+    except (TypeError, ValueError):
+        return {"success": False, "message": "Не указана заявка"}
+
+    reason = (reason or "").strip()
+    if not reason:
+        return {"success": False,
+                "message": "Укажите причину отказа — агент должен понять, "
+                           "что исправить"}
+    if len(reason) > 500:
+        reason = reason[:500]
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE operator_requests
+                       SET status = 'rejected', done_at = now(),
+                           done_by = $2, reason = $3
+                     WHERE id = $1 AND status = 'pending'
+                 RETURNING id, kind, agent, point_name, point_code,
+                           visit_day, tg_id, reason
+                    """,
+                    request_id, (operator_login or "").strip().upper(), reason,
+                )
+
+                snyato = 0
+                if row is not None and row["kind"] == "attach" and row["point_code"]:
+                    # Снимаем ровно те дни, что были в заявке. Если
+                    # супервайзер успел переставить точку, здесь не
+                    # совпадёт ничего — и это правильнее, чем снести
+                    # его работу заодно с отказом
+                    dni = [d.strip() for d in (row["visit_day"] or "").split(",")
+                           if d.strip()]
+                    if dni:
+                        result = await conn.execute(
+                            """
+                            DELETE FROM attachments
+                             WHERE point_code = $1
+                               AND upper(agent) = $2
+                               AND visit_day = ANY($3::text[])
+                            """,
+                            row["point_code"],
+                            (row["agent"] or "").strip().upper(), dni,
+                        )
+                        snyato = int(result.split()[-1]) if result else 0
+
+                    if snyato:
+                        await conn.execute(
+                            """
+                            INSERT INTO transfer_log
+                                (point_code, point_name, from_agent, to_agent,
+                                 days, by_login)
+                            VALUES ($1, $2, $3, $3, $4, $5)
+                            """,
+                            row["point_code"], row["point_name"],
+                            (row["agent"] or "").strip().upper(),
+                            f"отказ по заявке: {', '.join(dni)} — {reason}",
+                            (operator_login or "").strip().upper(),
+                        )
+    except Exception as e:
+        return _db_error(e)
+
+    if row is None:
+        return {"success": False,
+                "message": "Заявка уже обработана — обновите лист"}
+
+    await _notify_agent_rejected(row, snyato)
+
+    hvost = (f" Точка снята с {row['agent']}." if snyato
+             else " Прикрепление уже изменено — снимать было нечего."
+             if row["kind"] == "attach" else "")
+    return {"success": True, "id": row["id"], "removed": snyato,
+            "message": f"Отказано.{hvost}"}
+
+
+async def _notify_agent_rejected(row, snyato: int) -> None:
+    """Сообщение агенту об отказе. Причина — обязательная часть."""
+    tg_id = row["tg_id"]
+    if not tg_id:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                tg_id = await conn.fetchval(
+                    "SELECT tg_id FROM users WHERE upper(login) = $1",
+                    (row["agent"] or "").upper(),
+                )
+        except Exception:
+            logger.exception("Не удалось найти Telegram агента %s", row["agent"])
+            return
+
+    if not tg_id:
+        logger.info("У агента %s нет Telegram — отказ не отправлен",
+                    row["agent"])
+        return
+
+    what = "Добавление новой ТТ" if row["kind"] == "add" else "Прикрепление точки"
+    text = (
+        "❌ ЗАЯВКА ОТКЛОНЕНА\n\n"
+        f"📋 {what}\n"
+        f"🏪 {row['point_name'] or '—'}\n"
+        + (f"🔢 Код: {row['point_code']}\n" if row["point_code"] else "")
+        + (f"📅 Дни визита: {row['visit_day']}\n" if row["visit_day"] else "")
+        + f"\n💬 Причина: {row['reason']}\n"
+        + ("\nТочка снята с вас — в маршруте её больше нет.\n"
+           if snyato else "")
+        + "\nЕсли причина устранима, отправьте заявку заново. "
+          "Вопросы — супервайзеру."
+    )
+
+    await notify.notify_user(tg_id, text)
+
+
 async def _notify_agent_done(row) -> None:
     """Текстовое сообщение агенту о том, что его заявку провели."""
     tg_id = row["tg_id"]
@@ -2536,7 +2690,7 @@ async def archive_requests(day: str = "", search: str = "", limit: int = 300) ->
                 f"""
                 SELECT {REQUEST_COLUMNS}
                   FROM operator_requests
-                 WHERE status = 'done'
+                 WHERE status IN ('done', 'rejected')
                    AND (done_at AT TIME ZONE $1)::date = $2::text::date
                    AND ($3 = ''
                         OR upper(agent) LIKE $3
@@ -2712,6 +2866,16 @@ async def panel_request_done(token: str, request_id: int) -> dict:
     if not (auth["isOperator"] or auth["isAdmin"]):
         return {"success": False, "message": "Недостаточно прав"}
     return await mark_request_done(request_id, auth["login"])
+
+
+async def panel_request_reject(token: str, request_id: int,
+                               reason: str = "") -> dict:
+    auth = await _check_token(token)
+    if not auth.get("success"):
+        return auth
+    if not (auth["isOperator"] or auth["isAdmin"]):
+        return {"success": False, "message": "Недостаточно прав"}
+    return await reject_request(request_id, auth["login"], reason)
 
 
 async def panel_archive(token: str, day: str = "", search: str = "") -> dict:

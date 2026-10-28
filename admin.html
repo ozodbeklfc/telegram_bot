@@ -313,6 +313,34 @@
     font-size: 13px; line-height: 1.45; color: #8A2B2B;
   }
 
+  /* Кнопки заявки: «Готово» и «Отказ» рядом, одной шириной */
+  .req-actions { display: flex; flex-direction: column; gap: 6px; }
+  .btn-reject {
+    background: #fff; color: var(--red); border: 1px solid #F0C9C9;
+    border-radius: 9px; padding: 9px 14px; cursor: pointer;
+    font-family: inherit; font-size: 13.5px; font-weight: 600;
+    white-space: nowrap;
+  }
+  .btn-reject:hover { background: #FFF6F6; border-color: var(--red); }
+  .req.rejected { opacity: .75; background: #FFF9F9; }
+  .reject-mark {
+    color: var(--red); font-size: 13px; font-weight: 700;
+    white-space: nowrap; align-self: flex-start; padding-top: 4px;
+  }
+  /* Причина отказа — самое важное в архивной карточке */
+  .req-reason {
+    margin-top: 7px; padding: 7px 10px; border-radius: 8px;
+    background: #FFF1F1; color: #8A2B2B; font-size: 13px; line-height: 1.4;
+  }
+  /* Частые причины: одно нажатие вместо набора текста */
+  .reject-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
+  .reject-quick button {
+    background: #F3F6FB; border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 10px; cursor: pointer; font-family: inherit;
+    font-size: 12.5px; color: var(--text);
+  }
+  .reject-quick button:hover { background: #E9EFF8; }
+
   .list-info {
     font-size: 12.5px; color: var(--muted); padding: 0 2px 10px;
     display: flex; align-items: center; gap: 8px;
@@ -785,6 +813,34 @@
     <div class="modal-actions">
       <button class="btn ghost" id="days-cancel">Отмена</button>
       <button class="btn" id="days-save" disabled>Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div id="reject-overlay" class="overlay">
+  <div class="modal" style="max-width:420px;">
+    <h2>Отказать по заявке</h2>
+    <div class="who" id="reject-what">—</div>
+
+    <div id="reject-msg" class="msg"></div>
+
+    <p style="margin:0 0 8px; font-size:13.5px; color:#5A6478;">
+      Причину увидит агент в боте и в приложении. Без неё он отправит
+      такую же заявку завтра.
+    </p>
+
+    <div class="reject-quick" id="reject-quick"></div>
+
+    <textarea id="reject-reason" rows="3" maxlength="500"
+              placeholder="Например: точка уже закреплена за другим агентом"
+              style="width:100%; box-sizing:border-box; padding:10px 11px;
+                     border:1px solid var(--line); border-radius:9px;
+                     font-family:inherit; font-size:14px; resize:vertical;"></textarea>
+
+    <div class="modal-actions">
+      <button class="btn ghost" id="reject-cancel">Отмена</button>
+      <button class="btn-danger" id="reject-send" disabled
+              style="padding:11px 18px;">Отказать</button>
     </div>
   </div>
 </div>
@@ -1613,9 +1669,12 @@ const FIELD_NAMES = {
   pointCode: "Код точки", pointName: "Название точки",
 };
 
-function requestCard(req, done) {
+function requestCard(req, obrabotana) {
+  // В архиве лежат и проведённые, и отклонённые — их надо различать
+  // не только цветом: причина отказа важнее самой отметки
+  const otkaz = req.status === "rejected";
   return `
-  <div class="req ${done ? "done" : ""}" data-req="${req.id}">
+  <div class="req ${obrabotana ? (otkaz ? "rejected" : "done") : ""}" data-req="${req.id}">
     <div class="req-top">
       <div class="grow">
         <div>
@@ -1627,15 +1686,21 @@ function requestCard(req, done) {
         </div>
         ${req.visitDay ? `<div class="meta">📅 ${esc(req.visitDay)}</div>` : ""}
         <div class="req-when">
-          ${done
-            ? `Готово ${when(req.doneAt)}${req.doneBy ? " · " + esc(req.doneBy) : ""}`
+          ${obrabotana
+            ? `${otkaz ? "Отказано" : "Готово"} ${when(req.doneAt)}${req.doneBy ? " · " + esc(req.doneBy) : ""}`
             : `Поступила ${when(req.createdAt)}${req.source ? " · " + (req.source === "bot" ? "бот" : "сайт") : ""}`}
         </div>
+        ${otkaz && req.reason
+          ? `<div class="req-reason">💬 ${esc(req.reason)}</div>` : ""}
         ${requestFields(req)}
       </div>
-      ${done
-        ? '<div class="done-mark">✓ готово</div>'
-        : `<button class="btn-done" data-done="${req.id}">✓ Готово</button>`}
+      ${obrabotana
+        ? (otkaz ? '<div class="reject-mark">✕ отказано</div>'
+                 : '<div class="done-mark">✓ готово</div>')
+        : `<div class="req-actions">
+             <button class="btn-done" data-done="${req.id}">✓ Готово</button>
+             <button class="btn-reject" data-reject="${req.id}">✕ Отказ</button>
+           </div>`}
     </div>
   </div>`;
 }
@@ -1662,7 +1727,121 @@ function renderRequests(list) {
   box.querySelectorAll("[data-done]").forEach(btn => {
     btn.addEventListener("click", () => markDone(btn));
   });
+  box.querySelectorAll("[data-reject]").forEach(btn => {
+    btn.addEventListener("click", () => openReject(Number(btn.dataset.reject)));
+  });
 }
+
+
+// ---------------- ОТКАЗ ПО ЗАЯВКЕ ----------------
+// Отказ без причины приводит к такой же заявке на следующий день,
+// поэтому кнопка не работает, пока поле пустое. Частые причины
+// вынесены кнопками: набирать текст в листе из сотни заявок некогда.
+const rejectOverlay = document.getElementById("reject-overlay");
+let rejectId = 0;
+
+const CHASTYE_PRICHINY = [
+  "Точки нет в CRM",
+  "Неверный ИНН",
+  "Чужая территория",
+  "Точка уже за другим агентом",
+  "Точка закрыта",
+  "Дубль заявки",
+];
+
+function openReject(id) {
+  rejectId = id;
+  const card = document.querySelector(`.req[data-req="${id}"]`);
+  document.getElementById("reject-what").textContent = card
+    ? card.querySelector(".name").textContent.trim() + " · " +
+      card.querySelector(".meta").textContent.trim()
+    : "Заявка №" + id;
+
+  const pole = document.getElementById("reject-reason");
+  pole.value = "";
+  rejectMessage("", true);
+
+  const quick = document.getElementById("reject-quick");
+  quick.innerHTML = CHASTYE_PRICHINY.map(
+    p => `<button type="button" data-prichina="${esc(p)}">${esc(p)}</button>`
+  ).join("");
+  quick.querySelectorAll("[data-prichina]").forEach(b => {
+    b.addEventListener("click", () => {
+      pole.value = b.dataset.prichina;
+      syncReject();
+      pole.focus();
+    });
+  });
+
+  syncReject();
+  rejectOverlay.classList.add("active");
+  setTimeout(() => pole.focus(), 50);
+}
+
+function closeReject() {
+  rejectOverlay.classList.remove("active");
+  rejectId = 0;
+}
+
+function syncReject() {
+  const pusto = !document.getElementById("reject-reason").value.trim();
+  document.getElementById("reject-send").disabled = pusto;
+}
+
+function rejectMessage(text, ok) {
+  const box = document.getElementById("reject-msg");
+  box.textContent = text || "";
+  box.style.display = text ? "block" : "none";
+  box.className = "msg" + (ok ? "" : " bad");
+}
+
+document.getElementById("reject-reason").addEventListener("input", syncReject);
+document.getElementById("reject-cancel").addEventListener("click", closeReject);
+rejectOverlay.addEventListener("click", e => {
+  if (e.target === rejectOverlay) closeReject();
+});
+
+document.getElementById("reject-send").addEventListener("click", async () => {
+  const prichina = document.getElementById("reject-reason").value.trim();
+  if (!prichina || !rejectId) return;
+
+  const btn = document.getElementById("reject-send");
+  btn.disabled = true;
+  btn.textContent = "Отправляю...";
+
+  const r = await call("panel_request_reject",
+                       { id: rejectId, reason: prichina }).catch(() => null);
+
+  btn.textContent = "Отказать";
+
+  if (!r || !r.success) {
+    btn.disabled = false;
+    rejectMessage(r ? r.message : "Сервер не отвечает", false);
+    return;
+  }
+
+  // Карточка уезжает из листа так же, как при «Готово», только красным
+  const id = rejectId;
+  closeReject();
+  const card = document.querySelector(`.req[data-req="${id}"]`);
+  if (card) {
+    card.classList.add("rejected");
+    const actions = card.querySelector(".req-actions");
+    if (actions) actions.outerHTML = '<div class="reject-mark">✕ отказано</div>';
+    setTimeout(() => {
+      card.remove();
+      pendingCount = Math.max(0, pendingCount - 1);
+      renderNav("requests");
+      const left = document.querySelectorAll("#req-list .req").length;
+      document.getElementById("req-sub").textContent = left
+        ? `${left} ${plural(left, "заявка ждёт", "заявки ждут", "заявок ждут")} обработки`
+        : "Всё обработано";
+      if (!left) openRequests();
+    }, 900);
+  } else {
+    openRequests();
+  }
+});
 
 async function markDone(btn) {
   const id = Number(btn.dataset.done);

@@ -117,6 +117,11 @@ async def handle_api(request: web.Request) -> web.Response:
             result = await api.panel_request_done(
                 payload.get("token", ""), payload.get("id", 0))
 
+        elif action == "panel_request_reject":
+            result = await api.panel_request_reject(
+                payload.get("token", ""), payload.get("id", 0),
+                payload.get("reason", ""))
+
         elif action == "panel_archive":
             result = await api.panel_archive(
                 payload.get("token", ""), payload.get("day", ""),
