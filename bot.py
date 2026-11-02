@@ -315,13 +315,13 @@ async def process_password(message: Message, state: FSMContext):
     checking_msg = await message.answer("⏳ Проверяю логин и пароль...")
     result = await api.login(login_value, password)
 
-    if result.get("success") and result.get("role") in ("admin", "supervisor", "operator"):
-        # Супервайзеры, админы и операторы работают в панели в браузере,
+    if result.get("success") and result.get("role") in ("admin", "supervisor", "operator", "manager"):
+        # Супервайзеры, админы, менеджеры и операторы работают в панели в браузере,
         # а не в боте: точки они не прикрепляют
         await state.set_state(AuthStates.waiting_login)
         await checking_msg.edit_text(
             "🔒 Это вход для агентов.\n\n"
-            "Панель супервайзера и лист заявок оператора открываются "
+            "Панель супервайзера, обзор менеджера и лист заявок оператора открываются "
             "в браузере.\n\n"
             "Введите логин агента:"
         )

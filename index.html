@@ -269,6 +269,8 @@
            агент и должен увидеть после «Готово» у оператора. */
         .item.pending { border-left-color: #E9A23B; }
         .item.done    { border-left-color: var(--mint); background: #F4FCFA; }
+        /* Отказ — красная полоса: агент должен сразу отличить его от «готово» */
+        .item.rejected { border-left-color: var(--red); background: #FDF4F3; }
 
         .state {
             font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px;
@@ -276,6 +278,9 @@
         }
         .state.pending { background: #FFF2D9; color: #8A5A00; }
         .state.done    { background: #E6F7F4; color: #0A7A6B; }
+        .state.rejected { background: #FBEAE8; color: #B3261E; }
+        .item-reason { margin-top: 6px; padding: 7px 9px; border-radius: 7px; background: #FBEAE8;
+                       color: #8C1D18; font-size: 13px; line-height: 1.35; word-break: break-word; }
 
         .kind {
             display: inline-block; font-size: 10.5px; font-weight: 700;
@@ -1605,7 +1610,7 @@
         document.getElementById('req-sub').textContent = list.length
             ? (r.pendingCount
                 ? `${r.pendingCount} ${plural(r.pendingCount, 'ждёт', 'ждут', 'ждут')} обработки`
-                : 'все заявки выполнены')
+                : 'все заявки обработаны')
             : 'заявок пока нет';
 
         if (!list.length) {
@@ -1616,8 +1621,10 @@
 
         box.innerHTML = list.map(req => {
             const done = req.status === 'done';
+            const rejected = req.status === 'rejected';
+            const cls = rejected ? 'rejected' : (done ? 'done' : 'pending');
             return `
-            <div class="item ${done ? 'done' : 'pending'}">
+            <div class="item ${cls}">
                 <div class="item-row">
                     <div style="min-width:0;">
                         <span class="kind ${esc(req.kind)}">${esc(req.kindLabel)}</span>
@@ -1627,13 +1634,17 @@
                         </div>
                         ${req.visitDay ? `<div class="item-meta">📅 ${esc(req.visitDay)}</div>` : ''}
                         <div class="item-meta">
-                            ${done
-                                ? 'Выполнено ' + esc(shortWhen(req.doneAt))
-                                : 'Отправлено ' + esc(shortWhen(req.createdAt))}
+                            ${rejected
+                                ? 'Отказано ' + esc(shortWhen(req.doneAt))
+                                : done
+                                    ? 'Выполнено ' + esc(shortWhen(req.doneAt))
+                                    : 'Отправлено ' + esc(shortWhen(req.createdAt))}
                         </div>
+                        ${rejected && req.reason
+                            ? `<div class="item-reason">💬 ${esc(req.reason)}</div>` : ''}
                     </div>
-                    <span class="state ${done ? 'done' : 'pending'}">
-                        ${done ? '✓ готово' : 'в обработке'}
+                    <span class="state ${cls}">
+                        ${rejected ? '✕ отказано' : done ? '✓ готово' : 'в обработке'}
                     </span>
                 </div>
             </div>`;
@@ -1809,13 +1820,15 @@
             // забытая роль означает, что человек попадёт на экран агента
             // с поиском ИНН и вкладками — именно так оператор и провалился
             // в приложение агента.
-            const PANEL_ROLES = ['admin', 'supervisor', 'operator'];
+            const PANEL_ROLES = ['admin', 'supervisor', 'operator', 'manager'];
 
             if (result.success && PANEL_ROLES.includes(result.role)) {
                 statusDiv.className = 'status-message success';
                 statusDiv.textContent = result.role === 'operator'
                     ? "Открываю лист заявок..."
-                    : "Открываю панель супервайзера...";
+                    : result.role === 'manager'
+                        ? "Открываю обзор бренда..."
+                        : "Открываю панель супервайзера...";
                 statusDiv.style.display = 'block';
 
                 // Берём пропуск и кладём его для панели: она откроется уже
