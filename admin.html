@@ -544,6 +544,7 @@
       transition-duration: .01ms !important;
     }
   }
+.nav:empty{display:none}
 </style>
 </head>
 <body>
@@ -906,7 +907,7 @@ function dayStrip(daysText) {
 // Пароль здесь не хранится вообще.
 const TOKEN_KEY = "panel_token";
 let auth = { token: "", login: "", brand: "", supervisor: "",
-             isAdmin: false, isOperator: false };
+             isAdmin: false, isOperator: false, isManager: false };
 
 function saveToken(t) {
   auth.token = t || "";
@@ -1049,6 +1050,7 @@ async function doLogin() {
 function enterPanel(r) {
   auth.isAdmin = !!r.isAdmin;
   auth.isOperator = !!r.isOperator;
+  auth.isManager = !!r.isManager;
   const who = (auth.login || r.login || "").toUpperCase();
   auth.login = who;
 
@@ -1064,6 +1066,20 @@ function enterPanel(r) {
     renderRequests(r.requests || []);
     renderNav("requests");
     show("screen-requests");
+    return;
+  }
+
+  // Менеджер: только обзор своего бренда. Сразу его команды, без выбора
+  // бренда и без вкладок — заявок и архива у него нет
+  if (r.isManager) {
+    pickedBrand = r.brand || auth.brand || "";
+    auth.brand = pickedBrand;
+    document.getElementById("back-brandpick").classList.add("hidden");
+    const chip = document.getElementById("sv-brand-chip");
+    chip.textContent = pickedBrand;
+    chip.classList.remove("hidden");
+    renderSupervisors(r.supervisors || []);
+    show("screen-brands");
     return;
   }
 
@@ -1293,7 +1309,7 @@ async function openSupervisor(supervisor, brand) {
   document.getElementById("brand-chip").textContent = brand || "";
   document.getElementById("agent-search").value = "";
   document.getElementById("back-brands")
-    .classList.toggle("hidden", !(auth.isAdmin || auth.isOperator));
+    .classList.toggle("hidden", !(auth.isAdmin || auth.isOperator || auth.isManager));
   document.getElementById("agents-list").innerHTML = '<div class="loading">Загружаю агентов...</div>';
   document.getElementById("agents-sub").textContent = supervisor;
   show("screen-agents");
@@ -1317,7 +1333,7 @@ function doLogout() {
   call("panel_logout", {}).catch(() => {});
   saveToken("");
   auth = { token: "", login: "", brand: "", supervisor: "",
-           isAdmin: false, isOperator: false };
+           isAdmin: false, isOperator: false, isManager: false };
   // Логин оставляем в поле: обычно заходит один и тот же человек
   document.getElementById("login").value = lastLogin;
   document.getElementById("password").value = "";

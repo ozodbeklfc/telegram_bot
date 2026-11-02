@@ -124,7 +124,7 @@ async def login(login_value: str, password: str) -> dict:
                        -- пустой бренд означает «все бренды», поэтому
                        -- подставлять туда буквы логина нельзя: иначе
                        -- у логина operator появился бы «бренд OP».
-                       CASE WHEN COALESCE(role, 'agent') IN ('admin', 'operator')
+                       CASE WHEN COALESCE(role, 'agent') IN ('admin', 'operator', 'manager')
                             THEN brand
                             ELSE COALESCE(brand, upper(left(login, 2)))
                        END AS brand,
@@ -1317,6 +1317,10 @@ async def _notify_transfer(from_agent: str, to_agent: str, point_name: str,
 PANEL_SESSION_HOURS = 24
 
 
+# Кто вообще может войти в панель. Менеджер — смотрит обзор только своего бренда
+PANEL_ROLES = ("supervisor", "admin", "operator", "manager")
+
+
 async def _ensure_sessions_table(conn):
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS panel_sessions (
@@ -1393,14 +1397,20 @@ async def _check_token(token: str) -> dict:
     except Exception as e:
         return _db_error(e)
 
-    if row is None or row["role"] not in ("supervisor", "admin", "operator"):
+    if row is None or row["role"] not in PANEL_ROLES:
         return {"success": False, "message": "Недостаточно прав"}
+    # Менеджер привязан к бренду. Без бренда «его бренд» не определён, и
+    # пустое значение нельзя понимать как «все бренды»
+    if row["role"] == "manager" and not (row["brand"] or "").strip():
+        return {"success": False,
+                "message": "У менеджера не указан бренд — обратитесь к администратору"}
 
     return {
         "success": True,
         "role": row["role"],
         "isAdmin": row["role"] == "admin",
         "isOperator": row["role"] == "operator",
+        "isManager": row["role"] == "manager",
         "supervisor": login_value.upper() if row["role"] == "supervisor" else "",
         "brand": row["brand"] or "",
         "login": login_value,
@@ -1432,14 +1442,18 @@ async def _check_panel(login_value: str, password: str) -> dict:
         return {"success": False, "message": "Неверный логин или пароль"}
 
     role = auth.get("role")
-    if role not in ("supervisor", "admin", "operator"):
+    if role not in PANEL_ROLES:
         return {"success": False, "message": "Недостаточно прав"}
+    if role == "manager" and not (auth.get("brand") or "").strip():
+        return {"success": False,
+                "message": "У менеджера не указан бренд — обратитесь к администратору"}
 
     return {
         "success": True,
         "role": role,
         "isAdmin": role == "admin",
         "isOperator": role == "operator",
+        "isManager": role == "manager",
         "supervisor": login_value.strip().upper() if role == "supervisor" else "",
         "brand": auth.get("brand") or "",
     }
@@ -1447,19 +1461,45 @@ async def _check_panel(login_value: str, password: str) -> dict:
 
 def _deny_operator(auth: dict) -> dict | None:
     """
-    Отказ оператору на любой правке.
+    Отказ оператору и менеджеру на любой правке.
 
     Проверка явная и в каждом изменяющем действии, а не выведенная из
-    того, что у оператора нет подчинённых агентов. Раньше его не
+    того, что у них нет подчинённых агентов. Раньше оператора не
     пускали именно так — _agent_allowed возвращал False, — и стоило
-    открыть оператору просмотр чужих агентов, как вместе с просмотром
+    открыть просмотр чужих агентов, как вместе с просмотром
     открылись бы и открепление с переносом.
     """
     if auth.get("isOperator"):
         return {"success": False,
                 "message": "Оператор может только смотреть — "
                            "изменения делает супервайзер"}
+    if auth.get("isManager"):
+        return {"success": False,
+                "message": "Менеджер может только смотреть — "
+                           "изменения делает супервайзер"}
     return None
+
+
+async def _agent_in_brand(brand: str, agent: str) -> bool:
+    """Относится ли агент к бренду — по бренду его супервайзера,
+    так же, как считается экран «Обзор»."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT 1
+                  FROM users a
+                  JOIN users s ON upper(s.login) = upper(a.supervisor)
+                 WHERE upper(a.login) = $1
+                   AND s.role = 'supervisor'
+                   AND upper(COALESCE(s.brand, '')) = $2
+                """,
+                (agent or "").strip().upper(), (brand or "").strip().upper(),
+            )
+        return row is not None
+    except Exception:
+        return False
 
 
 async def _read_allowed(auth: dict, agent: str) -> bool:
@@ -1472,6 +1512,9 @@ async def _read_allowed(auth: dict, agent: str) -> bool:
     """
     if auth.get("isOperator"):
         return True
+    # Менеджер — только агенты своего бренда
+    if auth.get("isManager"):
+        return await _agent_in_brand(auth.get("brand", ""), agent)
     return await _agent_allowed(auth, agent)
 
 
@@ -1509,6 +1552,15 @@ async def panel_start(token: str) -> dict:
                            "login": auth["login"]})
         return result
 
+    if auth["isManager"]:
+        # Сразу команды своего бренда: выбирать бренд ему не из чего
+        result = await list_supervisors("", auth["brand"])
+        if result.get("success"):
+            result.update({"isAdmin": False, "isOperator": False,
+                           "isManager": True, "brand": auth["brand"].upper(),
+                           "login": auth["login"]})
+        return result
+
     if auth["isAdmin"]:
         result = await list_supervisors()
         if result.get("success"):
@@ -1530,9 +1582,15 @@ async def panel_brands(token: str, search: str = "") -> dict:
         return auth
     # Супервайзеру этот экран не нужен: он видит только своих агентов,
     # и выбирать ему не из чего
-    if not (auth["isAdmin"] or auth["isOperator"]):
+    if not (auth["isAdmin"] or auth["isOperator"] or auth["isManager"]):
         return {"success": False, "message": "Недостаточно прав"}
-    return await list_brands(search)
+    result = await list_brands(search)
+    if auth["isManager"] and result.get("success"):
+        # Менеджеру виден только его бренд, чужие в ответ не попадают вовсе
+        mine = auth["brand"].strip().upper()
+        result["brands"] = [b for b in result["brands"]
+                            if (b["brand"] or "").upper() == mine]
+    return result
 
 
 async def panel_supervisors(token: str, search: str = "",
@@ -1540,8 +1598,12 @@ async def panel_supervisors(token: str, search: str = "",
     auth = await _check_token(token)
     if not auth.get("success"):
         return auth
-    if not (auth["isAdmin"] or auth["isOperator"]):
+    if not (auth["isAdmin"] or auth["isOperator"] or auth["isManager"]):
         return {"success": False, "message": "Недостаточно прав"}
+    if auth["isManager"]:
+        # Бренд из запроса игнорируется: менеджер не должен суметь
+        # подставить чужой
+        brand = auth["brand"]
     return await list_supervisors(search, brand)
 
 
@@ -1551,8 +1613,21 @@ async def panel_agents(token: str, supervisor: str = "", search: str = "") -> di
         return auth
     # Супервайзер всегда смотрит свою команду, кто бы ни был указан в
     # запросе. Админ и оператор — ту, которую выбрали на прошлом экране
-    target = (supervisor if (auth["isAdmin"] or auth["isOperator"])
+    target = (supervisor if (auth["isAdmin"] or auth["isOperator"] or auth["isManager"])
               else auth["supervisor"])
+    if auth["isManager"]:
+        # Супервайзер должен быть из бренда менеджера
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                ok = await conn.fetchval(
+                    "SELECT 1 FROM users WHERE upper(login) = $1 AND role = 'supervisor'"
+                    " AND upper(COALESCE(brand, '')) = $2",
+                    (target or "").strip().upper(), auth["brand"].strip().upper())
+        except Exception as e:
+            return _db_error(e)
+        if not ok:
+            return {"success": False, "message": "Этот супервайзер не из вашего бренда"}
     return await list_agents(target, search)
 
 
@@ -1571,11 +1646,20 @@ async def panel_point_details(token: str, point_code: str, agent: str = "") -> d
         return auth
     if agent and not await _read_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
+    if auth.get("isManager") and not agent:
+        return {"success": False, "message": "Не указан агент"}
     result = await point_details(point_code, agent)
+    if result.get("success") and auth.get("isManager"):
+        # На точке могут стоять агенты других брендов — менеджеру они не видны
+        mine = []
+        for a in result.get("agents", []):
+            if await _agent_in_brand(auth["brand"], a.get("agent", "")):
+                mine.append(a)
+        result["agents"] = mine
     if result.get("success"):
         # Панель по этому признаку прячет кнопки правок: кнопка, которая
         # всегда отвечает отказом, — это обещание, которого нет
-        result["readOnly"] = bool(auth["isOperator"])
+        result["readOnly"] = bool(auth["isOperator"] or auth["isManager"])
     return result
 
 
