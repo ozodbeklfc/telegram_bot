@@ -1723,7 +1723,7 @@
         if (r.isBazar) {
             document.getElementById('pts-load').innerHTML =
                 `Точек у вас: <b class="${r.pointCount > cap ? 'over' : ''}">${r.pointCount}</b> из ${cap}` +
-                `<br>Работа: Вс, Вт, Ср, Чт, Пт. Визиты не ограничены, ` +
+                `<br>Работа: ${(r.workDays || []).map(d => d.slice(0, 2)).join(', ')}. Визиты не ограничены, ` +
                 `норма — ${cap} точек.`;
         } else
         document.getElementById('pts-load').innerHTML =

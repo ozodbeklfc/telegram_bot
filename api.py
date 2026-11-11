@@ -205,7 +205,7 @@ async def list_brands() -> dict:
                     SELECT COALESCE(brand, upper(left(login, 2))) AS brand,
                            upper(login) AS agent
                       FROM users
-                     WHERE COALESCE(role, 'agent') IN ('agent', 'agent_bazar')
+                     WHERE COALESCE(role, 'agent') IN ('agent', 'agent_bazar', 'agents_week')
                     UNION
                     SELECT upper(left(agent, 2)), upper(agent)
                       FROM attachments
@@ -283,7 +283,7 @@ _NARUSHENIYA_CTE = """
     ),
     pik AS (
         SELECT agent, max(n) AS peak FROM po_dnyam
-         WHERE agent NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar')
+         WHERE agent NOT IN (SELECT upper(login) FROM users WHERE role IN ('agent_bazar', 'agents_week'))
          GROUP BY agent
     ),
     -- Сводка по агенту. Нарушение — либо дней на точке больше нормы
@@ -295,7 +295,7 @@ _NARUSHENIYA_CTE = """
                    -- «дней на точке» к нему не применяется
                    WHERE (p.dnei > CASE WHEN p.is_top
                                         THEN $2::int ELSE $3::int END
-                          AND p.agent NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar'))
+                          AND p.agent NOT IN (SELECT upper(login) FROM users WHERE role IN ('agent_bazar', 'agents_week')))
                       OR (p.point_code, p.brand) IN
                          (SELECT point_code, brand FROM mnogo_agentov)
                ) AS problems
@@ -310,7 +310,7 @@ _NARUSHENIYA_CTE = """
           FROM users u
      LEFT JOIN svodka s ON s.agent = upper(u.login)
      LEFT JOIN pik    k ON k.agent = upper(u.login)
-         WHERE COALESCE(u.role, 'agent') IN ('agent', 'agent_bazar')
+         WHERE COALESCE(u.role, 'agent') IN ('agent', 'agent_bazar', 'agents_week')
     )
 """
 
@@ -441,7 +441,7 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                       FROM attachments a
                  LEFT JOIN client_base c ON c.point_code = a.point_code
                      WHERE upper(a.agent) IN (SELECT agent FROM my_agents)
-                       AND upper(a.agent) NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar')
+                       AND upper(a.agent) NOT IN (SELECT upper(login) FROM users WHERE role IN ('agent_bazar', 'agents_week'))
                      GROUP BY upper(a.agent), a.point_code, COALESCE(c.is_top, false)
                     -- Приведение к int обязательно: рядом стоит текстовый
                     -- параметр поиска, и без него драйвер решает, что
@@ -473,7 +473,7 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                       FROM attachments a
                  LEFT JOIN client_base c ON c.point_code = a.point_code
                      WHERE upper(a.agent) IN (SELECT agent FROM my_agents)
-                       AND upper(a.agent) NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar')
+                       AND upper(a.agent) NOT IN (SELECT upper(login) FROM users WHERE role IN ('agent_bazar', 'agents_week'))
                        AND a.visit_day IS NOT NULL AND a.visit_day <> ''
                      GROUP BY upper(a.agent), a.visit_day
                 ),
@@ -518,7 +518,7 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                 supervisor, pattern, MAX_VISIT_DAYS, MAX_VISIT_DAYS_REGULAR,
             )
             bazar = {r["l"] for r in await conn.fetch(
-                "SELECT upper(login) AS l FROM users WHERE role = 'agent_bazar'")}
+                "SELECT upper(login) AS l FROM users WHERE role IN ('agent_bazar', 'agents_week')")}
     except Exception as e:
         return _db_error(e)
 
@@ -664,7 +664,7 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
         # Правила и факт для шапки панели
         "pointCount": load.get("pointCount", 0),
         "dayLoad": load.get("dayLoad", {}),
-        "workDays": work_days_for(bazar),
+        "workDays": await free_work_days(agent),
         "isBazar": bazar,
         "pointCapacity": BAZAR_MAX_POINTS if bazar else None,
         "weekVisits": load.get("weekVisits", 0),
@@ -760,7 +760,7 @@ async def point_details(point_code: str, agent: str = "") -> dict:
         "problems": problems,
         "maxDays": max_here,
         "maxDaysTop": MAX_VISIT_DAYS,
-        "workDays": work_days_for(bool(agent) and agent.strip().upper() in bazar_set),
+        "workDays": await free_work_days(agent),
     }
 
 
@@ -894,7 +894,7 @@ async def transfer_candidates(from_agent: str, point_code: str,
                 """
                 SELECT upper(login) AS agent
                   FROM users
-                 WHERE COALESCE(role, 'agent') IN ('agent', 'agent_bazar')
+                 WHERE COALESCE(role, 'agent') IN ('agent', 'agent_bazar', 'agents_week')
                    AND upper(left(login, 2)) = $1
                    AND upper(login) <> $2
                    AND ($3 OR upper(COALESCE(supervisor, '')) = $4)
@@ -1121,7 +1121,7 @@ async def day_options(agent: str, point_code: str) -> dict:
 
     is_top = bool(info["is_top"]) if info else False
     bazar = await is_bazar(agent)
-    wd = work_days_for(bazar)
+    wd = await free_work_days(agent)
     max_here = len(BAZAR_DAYS) if bazar else max_days_for(is_top)
     load = {r["visit_day"].strip(): r["visits"] for r in rows if r["visit_day"]}
 
@@ -1175,7 +1175,7 @@ async def set_visit_days(agent: str, point_code: str, days: list,
         return {"success": False,
                 "message": f"День выбран дважды: {', '.join(repeated)}"}
 
-    unknown = [d for d in days if d not in work_days_for(await is_bazar(agent))]
+    unknown = [d for d in days if d not in await free_work_days(agent)]
     if unknown:
         return {"success": False,
                 "message": f"Неизвестный день: {', '.join(unknown)}"}
@@ -1924,23 +1924,46 @@ def max_days_for(is_top: bool) -> int:
 
 
 # ----------------------------------------------------------------------
-# Агент-базарщик (users.role = 'agent_bazar').
+# Агент-базарщик (users.role IN ('agent_bazar', 'agents_week')).
 # Работает с воскресенья: понедельник — выходной, вместо него Воскресенье.
 # Считаются только ТОЧКИ — не больше 180. Визиты не ограничиваются ни по
 # дням недели, ни по числу дней на одной точке: на базар ездят каждый день.
 # Всё остальное (бренд на точке, передача, заявки) — как у обычного агента.
 # ----------------------------------------------------------------------
 BAZAR_ROLE = "agent_bazar"
-AGENT_ROLES = ("agent", "agent_bazar")
+AGENT_ROLES = ("agent", "agent_bazar", "agents_week")
 BAZAR_DAYS = ["Воскресенье", "Вторник", "Среда", "Четверг", "Пятница"]
 BAZAR_MAX_POINTS = 180
 ALL_WEEK = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница",
             "Суббота", "Воскресенье"]
 
 
+# Роли «свободных дней»: точка может стоять на всех рабочих днях подряд,
+# нормы по визитам и дням на точке нет, считаются только точки (до 180).
+#   agent_bazar — Вс, Вт–Пт (понедельник выходной)
+#   agents_week — Пн–Пт (один клиент во все дни недели, Сб и Вс — нет)
+FREE_ROLES = {"agent_bazar": BAZAR_DAYS, "agents_week": list(WORK_DAYS)}
+
+
 def work_days_for(bazar: bool) -> list:
-    """Рабочие дни агента."""
+    """Рабочие дни агента (старая форма: bazar=True — базарщик)."""
     return list(BAZAR_DAYS if bazar else WORK_DAYS)
+
+
+async def free_work_days(agent: str) -> list:
+    """Рабочие дни агента с учётом роли."""
+    agent = (agent or "").strip().upper()
+    if not agent:
+        return list(WORK_DAYS)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            role = await conn.fetchval(
+                "SELECT role FROM users WHERE upper(login) = $1", agent)
+    except Exception:
+        logger.exception("Не удалось определить роль агента")
+        return list(WORK_DAYS)
+    return list(FREE_ROLES.get(role, WORK_DAYS))
 
 
 async def bazar_logins() -> set:
@@ -1949,7 +1972,7 @@ async def bazar_logins() -> set:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT upper(login) AS l FROM users WHERE role = 'agent_bazar'")
+                "SELECT upper(login) AS l FROM users WHERE role IN ('agent_bazar', 'agents_week')")
     except Exception:
         logger.exception("Не удалось получить список базарщиков")
         return set()
@@ -1969,7 +1992,7 @@ async def is_bazar(agent: str) -> bool:
     except Exception:
         logger.exception("Не удалось определить роль агента")
         return False
-    return role == BAZAR_ROLE
+    return role in FREE_ROLES
 
 # Узбекистан круглый год живёт в UTC+5, перевода часов нет.
 # Нужен для «сегодняшнего дня визита» и для архива по дням.
@@ -2048,7 +2071,7 @@ async def agent_load(agent: str) -> dict:
         "success": True,
         "agent": agent,
         "isBazar": bazar,
-        "workDays": work_days_for(bazar),
+        "workDays": await free_work_days(agent),
         "pointCount": points or 0,
         "dayLoad": day_load,
         # У базарщика дневной нормы визитов нет
@@ -2956,7 +2979,7 @@ async def today_name(agent: str = "") -> str:
 
     idx = int(dow) - 1
     name = ALL_WEEK[idx] if 0 <= idx < len(ALL_WEEK) else ""
-    return name if name in work_days_for(await is_bazar(agent)) else ""
+    return name if name in await free_work_days(agent) else ""
 
 
 async def day_points(agent: str, day: str = "") -> dict:
@@ -3007,7 +3030,7 @@ async def day_points(agent: str, day: str = "") -> dict:
         "agent": agent,
         "day": day,
         "today": today,
-        "workDays": work_days_for(bool(load.get("isBazar"))),
+        "workDays": load.get("workDays") or list(WORK_DAYS),
         "isBazar": bool(load.get("isBazar")),
         "points": [
             {

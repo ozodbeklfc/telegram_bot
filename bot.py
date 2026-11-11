@@ -342,6 +342,9 @@ async def process_password(message: Message, state: FSMContext):
             + (f"📋 Правила: работа Вс, Вт–Пт, не больше {api.BAZAR_MAX_POINTS} точек, "
                f"визиты не считаются.\n"
                if result.get("role") == "agent_bazar" else
+               f"📋 Правила: работа Пн–Пт, не больше {api.BAZAR_MAX_POINTS} точек, "
+               f"одна точка может стоять на всех днях недели.\n"
+               if result.get("role") == "agents_week" else
                f"📋 Правила: не больше {api.MAX_VISITS_PER_DAY} ТРТ в один день "
                f"({api.MAX_VISITS_PER_DAY * len(data.DAYS)} в неделю).\n"
                f"Обычная точка — один день в неделю, ТОП — до {api.MAX_VISIT_DAYS}.\n")

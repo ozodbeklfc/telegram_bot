@@ -1373,7 +1373,7 @@ function renderAgents(agents) {
         </div>
         <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")} ·
           ${a.isBazar
-            ? `базар, норма 180 точек${a.overBy
+            ? `норма 180 точек, визиты не считаются${a.overBy
                 ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>` : ""}`
             : `${a.visits} ТРТ в неделю${a.overBy
                 ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>` : ""}`
@@ -1481,7 +1481,10 @@ function applyDayFilter() {
 // в списке остаются две точки, а лимит всё равно про все.
 function renderRules(r) {
   const bazar = !!r.isBazar;
-  stripDays = bazar ? BAZAR_STRIP : DAYS;
+  // Полоска дней — по рабочим дням агента: у базарщика Вс–Пт, у «недельного» Пн–Пт
+  stripDays = bazar
+    ? (r.workDays || []).map(d => DAYS_LOOKUP.find(x => x[1] === d) || [d.slice(0, 2), d])
+    : DAYS;
   // Базарщик: норма — 180 ТОЧЕК, визиты и дни на точке не считаются
   const maxDay = bazar ? Infinity : (r.maxVisitsPerDay || 36);
   const count = r.pointCount || 0;
@@ -1496,8 +1499,9 @@ function renderRules(r) {
   const nameBox = document.querySelector("#rules-body .rule:nth-of-type(1) .rule-name");
   if (nameBox) {
     nameBox.innerHTML = bazar
-      ? `Агент-базарщик: не больше <b>${cap}</b> точек
-         <span class="rule-hint">(работа Вс, Вт–Пт, визиты не считаются)</span>`
+      ? `Не больше <b>${cap}</b> точек
+         <span class="rule-hint">(работа ${(r.workDays || []).map(d => (DAYS_LOOKUP.find(x => x[1] === d) || [d])[0]).join(", ")};
+         визиты и дни на точке не считаются)</span>`
       : `Не больше <b id="rule-max-day">36</b> ТРТ в один день
          <span class="rule-hint">(<b id="rule-week-cap">180</b> в неделю)</span>`;
   }
