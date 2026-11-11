@@ -1402,6 +1402,23 @@
         });
     }
 
+    // Агент-базарщик работает с воскресенья: вместо понедельника — Воскресенье
+    function setWorkDays(isBazar) {
+        const from = isBazar ? 'Понедельник' : 'Воскресенье';
+        const to = isBazar ? 'Воскресенье' : 'Понедельник';
+        ['attachDay1', 'attachDay2', 'attachDay3', 'visitDay1', 'visitDay2', 'visitDay3']
+            .forEach(id => {
+                const select = document.getElementById(id);
+                if (!select) return;
+                [...select.options].forEach(opt => {
+                    if (opt.value === from) {
+                        opt.value = to;
+                        opt.textContent = to;
+                    }
+                });
+            });
+    }
+
     function setupCascadingDays(day1Id, day2GroupId, day2Id, day3GroupId, day3Id) {
         const day1 = document.getElementById(day1Id);
         const day2Group = document.getElementById(day2GroupId);
@@ -1703,6 +1720,12 @@
         const todayLoad = load[r.today] || 0;
         const week = r.weekVisits || 0;
         const cap = r.weekCapacity || 0;
+        if (r.isBazar) {
+            document.getElementById('pts-load').innerHTML =
+                `Точек у вас: <b class="${r.pointCount > cap ? 'over' : ''}">${r.pointCount}</b> из ${cap}` +
+                `<br>Работа: Вс, Вт, Ср, Чт, Пт. Визиты не ограничены, ` +
+                `норма — ${cap} точек.`;
+        } else
         document.getElementById('pts-load').innerHTML =
             `ТРТ за неделю: <b class="${week > cap ? 'over' : ''}">${week}</b> из ${cap}` +
             ` · ${r.today ? 'сегодня' : 'в текущий день'}: ` +
@@ -1853,6 +1876,7 @@
                 statusDiv.style.display = 'block';
 
                 currentUser = login.toUpperCase();
+                setWorkDays(result.role === 'agent_bazar');
                 document.getElementById('display-user').textContent = currentUser;
                 document.getElementById('display-user-req').textContent = currentUser;
                 document.getElementById('display-user-pts').textContent = currentUser;
@@ -2399,6 +2423,10 @@
                 showBlocked("В этой точке закреплён другой агент вашего бренда",
                             point.pointName,
                             "Агент: " + check.blockedBy);
+            } else if (check.reason === 'points_limit') {
+                showBlocked("У вас уже " + check.pointCapacity + " точек — это предел",
+                            point.pointName,
+                            "Новую точку можно взять, только освободив одну из прежних.");
             } else if (check.reason === 'day_limit') {
                 showBlocked("Все дни заполнены по " + check.maxVisitsPerDay + " ТРТ",
                             point.pointName,
@@ -2424,6 +2452,7 @@
 
         document.getElementById('attachPointName').value = point.pointName;
         document.getElementById('attachPointCode').value = point.pointCode;
+        setWorkDays(!!check.isBazar);
         applyTakenDays(check.myDays || [], check.remaining, check.fullDays || [],
                        check.isTop, check.maxDaysHere);
         showScreen('screen-attach');

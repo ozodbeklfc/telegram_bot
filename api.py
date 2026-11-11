@@ -205,7 +205,7 @@ async def list_brands() -> dict:
                     SELECT COALESCE(brand, upper(left(login, 2))) AS brand,
                            upper(login) AS agent
                       FROM users
-                     WHERE COALESCE(role, 'agent') = 'agent'
+                     WHERE COALESCE(role, 'agent') IN ('agent', 'agent_bazar')
                     UNION
                     SELECT upper(left(agent, 2)), upper(agent)
                       FROM attachments
@@ -282,15 +282,20 @@ _NARUSHENIYA_CTE = """
          GROUP BY upper(a.agent), a.visit_day
     ),
     pik AS (
-        SELECT agent, max(n) AS peak FROM po_dnyam GROUP BY agent
+        SELECT agent, max(n) AS peak FROM po_dnyam
+         WHERE agent NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar')
+         GROUP BY agent
     ),
     -- Сводка по агенту. Нарушение — либо дней на точке больше нормы
     -- (у ТОП своя, у обычной своя), либо на точке второй агент бренда
     svodka AS (
         SELECT p.agent,
                count(*) FILTER (
-                   WHERE p.dnei > CASE WHEN p.is_top
-                                       THEN $2::int ELSE $3::int END
+                   -- Агент-базарщик ездит на точку каждый день: правило
+                   -- «дней на точке» к нему не применяется
+                   WHERE (p.dnei > CASE WHEN p.is_top
+                                        THEN $2::int ELSE $3::int END
+                          AND p.agent NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar'))
                       OR (p.point_code, p.brand) IN
                          (SELECT point_code, brand FROM mnogo_agentov)
                ) AS problems
@@ -305,7 +310,7 @@ _NARUSHENIYA_CTE = """
           FROM users u
      LEFT JOIN svodka s ON s.agent = upper(u.login)
      LEFT JOIN pik    k ON k.agent = upper(u.login)
-         WHERE COALESCE(u.role, 'agent') = 'agent'
+         WHERE COALESCE(u.role, 'agent') IN ('agent', 'agent_bazar')
     )
 """
 
@@ -436,6 +441,7 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                       FROM attachments a
                  LEFT JOIN client_base c ON c.point_code = a.point_code
                      WHERE upper(a.agent) IN (SELECT agent FROM my_agents)
+                       AND upper(a.agent) NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar')
                      GROUP BY upper(a.agent), a.point_code, COALESCE(c.is_top, false)
                     -- Приведение к int обязательно: рядом стоит текстовый
                     -- параметр поиска, и без него драйвер решает, что
@@ -467,6 +473,7 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                       FROM attachments a
                  LEFT JOIN client_base c ON c.point_code = a.point_code
                      WHERE upper(a.agent) IN (SELECT agent FROM my_agents)
+                       AND upper(a.agent) NOT IN (SELECT upper(login) FROM users WHERE role = 'agent_bazar')
                        AND a.visit_day IS NOT NULL AND a.visit_day <> ''
                      GROUP BY upper(a.agent), a.visit_day
                 ),
@@ -510,6 +517,8 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                 """,
                 supervisor, pattern, MAX_VISIT_DAYS, MAX_VISIT_DAYS_REGULAR,
             )
+            bazar = {r["l"] for r in await conn.fetch(
+                "SELECT upper(login) AS l FROM users WHERE role = 'agent_bazar'")}
     except Exception as e:
         return _db_error(e)
 
@@ -528,7 +537,11 @@ async def list_agents(supervisor: str, search: str = "") -> dict:
                 "problems": r["problems"],
                 # Перебор по визитам — отдельная беда, не «проблемная точка»:
                 # в списке он должен быть виден сразу, без открытия агента
-                "overBy": max(0, r["visits"] - capacity),
+                # У базарщика норма — 180 ТОЧЕК, визиты не считаются
+                "isBazar": r["agent"] in bazar,
+                "overBy": (max(0, r["points"] - BAZAR_MAX_POINTS)
+                           if r["agent"] in bazar
+                           else max(0, r["visits"] - capacity)),
                 # Самый тяжёлый день и насколько он выше нормы. Неделя
                 # может быть в порядке, а один день — забит вдвое: по
                 # недельной сумме этого не видно
@@ -609,12 +622,14 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
     except Exception as e:
         return _db_error(e)
 
+    bazar = await is_bazar(agent)
     points = []
     for r in rows:
         problems = []
         is_top = bool(r["is_top"])
-        # Сколько дней разрешено именно здесь: ТОП — до трёх, обычной — один
-        max_here = max_days_for(is_top)
+        # Сколько дней разрешено именно здесь: ТОП — до трёх, обычной — один.
+        # Базарщик ездит на точку каждый день — ограничения по дням нет
+        max_here = len(BAZAR_DAYS) if bazar else max_days_for(is_top)
 
         if r["day_count"] > max_here:
             problems.append("days")
@@ -649,7 +664,9 @@ async def agent_points(agent: str, brand: str = "", search: str = "") -> dict:
         # Правила и факт для шапки панели
         "pointCount": load.get("pointCount", 0),
         "dayLoad": load.get("dayLoad", {}),
-        "workDays": list(WORK_DAYS),
+        "workDays": work_days_for(bazar),
+        "isBazar": bazar,
+        "pointCapacity": BAZAR_MAX_POINTS if bazar else None,
         "weekVisits": load.get("weekVisits", 0),
         "weekCapacity": load.get("weekCapacity", 0),
         "topCount": sum(1 for p in points if p["isTop"]),
@@ -700,6 +717,7 @@ async def point_details(point_code: str, agent: str = "") -> dict:
     is_top = bool(info["is_top"]) if info else False
     # Норма дней зависит от точки: ТОП — до трёх, обычная — один
     max_here = max_days_for(is_top)
+    bazar_set = await bazar_logins()
 
     agents = [
         {
@@ -707,7 +725,7 @@ async def point_details(point_code: str, agent: str = "") -> dict:
             "days": r["days"] or "",
             "dayList": split_days(r["days"]),
             "dayCount": r["day_count"],
-            "tooManyDays": r["day_count"] > max_here,
+            "tooManyDays": r["day_count"] > max_here and r["agent"] not in bazar_set,
         }
         for r in rows
     ]
@@ -742,7 +760,7 @@ async def point_details(point_code: str, agent: str = "") -> dict:
         "problems": problems,
         "maxDays": max_here,
         "maxDaysTop": MAX_VISIT_DAYS,
-        "workDays": list(WORK_DAYS),
+        "workDays": work_days_for(bool(agent) and agent.strip().upper() in bazar_set),
     }
 
 
@@ -876,7 +894,7 @@ async def transfer_candidates(from_agent: str, point_code: str,
                 """
                 SELECT upper(login) AS agent
                   FROM users
-                 WHERE COALESCE(role, 'agent') = 'agent'
+                 WHERE COALESCE(role, 'agent') IN ('agent', 'agent_bazar')
                    AND upper(left(login, 2)) = $1
                    AND upper(login) <> $2
                    AND ($3 OR upper(COALESCE(supervisor, '')) = $4)
@@ -901,7 +919,10 @@ async def transfer_candidates(from_agent: str, point_code: str,
             "pointCount": load["pointCount"],
             # Чем ещё может нагрузиться агент — это свободные ВИЗИТЫ:
             # отдельного запаса по точкам больше нет
-            "freeVisits": max(0, load["weekCapacity"] - load["weekVisits"]),
+            "freeVisits": max(0, load["weekCapacity"] -
+                              (load["pointCount"] if load.get("isBazar")
+                               else load["weekVisits"])),
+            "isBazar": bool(load.get("isBazar")),
             "dayLoad": load["dayLoad"],
             "fullDays": load["fullDays"],
             "weekVisits": load["weekVisits"],
@@ -1099,13 +1120,14 @@ async def day_options(agent: str, point_code: str) -> dict:
                 "message": f"{agent} не закреплён за этой точкой"}
 
     is_top = bool(info["is_top"]) if info else False
-    max_here = max_days_for(is_top)
+    bazar = await is_bazar(agent)
+    wd = work_days_for(bazar)
+    max_here = len(BAZAR_DAYS) if bazar else max_days_for(is_top)
     load = {r["visit_day"].strip(): r["visits"] for r in rows if r["visit_day"]}
 
     current_days = sorted((c["visit_day"].strip() for c in current),
-                          key=lambda d: WORK_DAYS.index(d)
-                          if d in WORK_DAYS else 99)
-    full = [d for d, n in load.items() if n >= MAX_VISITS_PER_DAY]
+                          key=lambda d: wd.index(d) if d in wd else 99)
+    full = [] if bazar else [d for d, n in load.items() if n >= MAX_VISITS_PER_DAY]
 
     return {
         "success": True,
@@ -1115,7 +1137,8 @@ async def day_options(agent: str, point_code: str) -> dict:
         "isTop": is_top,
         "maxDays": max_here,
         "currentDays": current_days,
-        "workDays": list(WORK_DAYS),
+        "workDays": wd,
+        "isBazar": bazar,
         # Загрузка без этой точки — её же день не должен считаться занятым
         "dayLoad": load,
         # Дни, где норма уже выбрана. Выбрать такой день МОЖНО: это
@@ -1152,7 +1175,7 @@ async def set_visit_days(agent: str, point_code: str, days: list,
         return {"success": False,
                 "message": f"День выбран дважды: {', '.join(repeated)}"}
 
-    unknown = [d for d in days if d not in WORK_DAYS]
+    unknown = [d for d in days if d not in work_days_for(await is_bazar(agent))]
     if unknown:
         return {"success": False,
                 "message": f"Неизвестный день: {', '.join(unknown)}"}
@@ -1899,6 +1922,55 @@ def max_days_for(is_top: bool) -> int:
     """Сколько дней визита разрешено на этой точке."""
     return MAX_VISIT_DAYS if is_top else MAX_VISIT_DAYS_REGULAR
 
+
+# ----------------------------------------------------------------------
+# Агент-базарщик (users.role = 'agent_bazar').
+# Работает с воскресенья: понедельник — выходной, вместо него Воскресенье.
+# Считаются только ТОЧКИ — не больше 180. Визиты не ограничиваются ни по
+# дням недели, ни по числу дней на одной точке: на базар ездят каждый день.
+# Всё остальное (бренд на точке, передача, заявки) — как у обычного агента.
+# ----------------------------------------------------------------------
+BAZAR_ROLE = "agent_bazar"
+AGENT_ROLES = ("agent", "agent_bazar")
+BAZAR_DAYS = ["Воскресенье", "Вторник", "Среда", "Четверг", "Пятница"]
+BAZAR_MAX_POINTS = 180
+ALL_WEEK = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница",
+            "Суббота", "Воскресенье"]
+
+
+def work_days_for(bazar: bool) -> list:
+    """Рабочие дни агента."""
+    return list(BAZAR_DAYS if bazar else WORK_DAYS)
+
+
+async def bazar_logins() -> set:
+    """Логины всех агентов-базарщиков (верхний регистр)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT upper(login) AS l FROM users WHERE role = 'agent_bazar'")
+    except Exception:
+        logger.exception("Не удалось получить список базарщиков")
+        return set()
+    return {r["l"] for r in rows}
+
+
+async def is_bazar(agent: str) -> bool:
+    """Агент — базарщик?"""
+    agent = (agent or "").strip().upper()
+    if not agent:
+        return False
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            role = await conn.fetchval(
+                "SELECT role FROM users WHERE upper(login) = $1", agent)
+    except Exception:
+        logger.exception("Не удалось определить роль агента")
+        return False
+    return role == BAZAR_ROLE
+
 # Узбекистан круглый год живёт в UTC+5, перевода часов нет.
 # Нужен для «сегодняшнего дня визита» и для архива по дням.
 TIMEZONE = "Asia/Tashkent"
@@ -1970,18 +2042,26 @@ async def agent_load(agent: str) -> dict:
 
     day_load = {r["visit_day"].strip(): r["visits"] for r in rows if r["visit_day"]}
     used = sum(day_load.values())
+    bazar = await is_bazar(agent)
 
     return {
         "success": True,
         "agent": agent,
+        "isBazar": bazar,
+        "workDays": work_days_for(bazar),
         "pointCount": points or 0,
         "dayLoad": day_load,
-        "fullDays": sorted(d for d, n in day_load.items() if n >= MAX_VISITS_PER_DAY),
+        # У базарщика дневной нормы визитов нет
+        "fullDays": [] if bazar else sorted(
+            d for d, n in day_load.items() if n >= MAX_VISITS_PER_DAY),
         "weekVisits": used,
-        "weekCapacity": MAX_VISITS_PER_DAY * len(WORK_DAYS),
+        # У базарщика недельная норма — 180 точек (pointCount), не визитов
+        "weekCapacity": (BAZAR_MAX_POINTS if bazar
+                         else MAX_VISITS_PER_DAY * len(WORK_DAYS)),
+        "pointCapacity": BAZAR_MAX_POINTS if bazar else None,
         "maxVisitsPerDay": MAX_VISITS_PER_DAY,
-        "maxDays": MAX_VISIT_DAYS,
-        "maxDaysRegular": MAX_VISIT_DAYS_REGULAR,
+        "maxDays": len(BAZAR_DAYS) if bazar else MAX_VISIT_DAYS,
+        "maxDaysRegular": len(BAZAR_DAYS) if bazar else MAX_VISIT_DAYS_REGULAR,
     }
 
 
@@ -2077,9 +2157,13 @@ async def check_attach_allowed(point_code: str, agent: str,
         return load
 
     is_top = bool(info["is_top"]) if info else False
-    max_days_here = max_days_for(is_top)
+    bazar = bool(load.get("isBazar"))
+    max_days_here = len(BAZAR_DAYS) if bazar else max_days_for(is_top)
 
     limits = {
+        "isBazar": bazar,
+        "pointCapacity": load.get("pointCapacity"),
+        "workDays": load["workDays"],
         "pointCount": load["pointCount"],
         "weekVisits": load["weekVisits"],
         "weekCapacity": load["weekCapacity"],
@@ -2123,13 +2207,18 @@ async def check_attach_allowed(point_code: str, agent: str,
     if other_agent:
         return answer(False, "brand", blockedBy=other_agent)
 
+    # Базарщик: новая точка сверх 180 не прикрепляется (старый перебор
+    # не трогаем — останавливается только новое прикрепление)
+    if bazar and not my_days and load["pointCount"] >= BAZAR_MAX_POINTS:
+        return answer(False, "points_limit")
+
     remaining = max_days_here - len(my_days)
     if remaining <= 0:
         # На обычной точке это значит «день уже есть», на ТОП — «занято три»
         return answer(False, "limit")
 
     # Правило 4. Дни, где агент уже выбрал норму визитов, недоступны
-    free_days = [d for d in WORK_DAYS
+    free_days = [d for d in load["workDays"]
                  if d not in my_days and d not in load["fullDays"]]
     if not free_days:
         return answer(False, "day_limit")
@@ -2308,7 +2397,7 @@ async def _require_agent(login_value: str) -> dict | None:
     if role is None:
         return {"success": False, "message": "Такого агента нет в базе"}
 
-    if role != "agent":
+    if role not in AGENT_ROLES:
         return {"success": False,
                 "message": "Этот логин не агентский — точки прикрепляют только агенты"}
 
@@ -2325,6 +2414,10 @@ def attach_denied_text(check: dict) -> str:
     if reason == "brand":
         return (f"В этой точке закреплён другой агент вашего бренда "
                 f"({check.get('blockedBy')})")
+
+    if reason == "points_limit":
+        return (f"У вас уже {BAZAR_MAX_POINTS} точек — это предел. "
+                f"Новую точку можно взять, только освободив одну из прежних.")
 
     if reason == "day_limit":
         return (f"Во всех рабочих днях у вас уже по {MAX_VISITS_PER_DAY} ТРТ — "
@@ -2847,8 +2940,11 @@ async def my_requests(agent: str, limit: int = 60) -> dict:
 
 # Порядковый номер дня недели у Postgres (isodow): 1 = понедельник.
 # Совпадает с порядком в WORK_DAYS, поэтому индекс берётся вычитанием.
-async def today_name() -> str:
-    """Название сегодняшнего дня по-русски, по ташкентскому времени."""
+async def today_name(agent: str = "") -> str:
+    """
+    Название сегодняшнего дня по-русски, по ташкентскому времени.
+    Для базарщика воскресенье — рабочий день, для остальных — пусто.
+    """
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -2859,7 +2955,8 @@ async def today_name() -> str:
         return ""
 
     idx = int(dow) - 1
-    return WORK_DAYS[idx] if 0 <= idx < len(WORK_DAYS) else ""
+    name = ALL_WEEK[idx] if 0 <= idx < len(ALL_WEEK) else ""
+    return name if name in work_days_for(await is_bazar(agent)) else ""
 
 
 async def day_points(agent: str, day: str = "") -> dict:
@@ -2874,7 +2971,7 @@ async def day_points(agent: str, day: str = "") -> dict:
     if not agent:
         return {"success": False, "message": "Не указан агент"}
 
-    today = await today_name()
+    today = await today_name(agent)
     day = (day or "").strip()
     if not day:
         day = today or "all"
@@ -2910,7 +3007,8 @@ async def day_points(agent: str, day: str = "") -> dict:
         "agent": agent,
         "day": day,
         "today": today,
-        "workDays": list(WORK_DAYS),
+        "workDays": work_days_for(bool(load.get("isBazar"))),
+        "isBazar": bool(load.get("isBazar")),
         "points": [
             {
                 "pointCode": r["point_code"],

@@ -4,7 +4,7 @@
 --  1. Сначала выложите новые api.py и admin.html (commit + push).
 --  2. Затем добавьте менеджера — замените логин, пароль и бренд:
 --
---     psql "$DATABASE_URL" -c "INSERT INTO users (login, password, role, brand) VALUES ('kl_manager', 'ПАРОЛЬ', 'manager', 'KL')"
+--     psql "$DATABASE_URL" -c ""
 --
 --  Бренд обязателен (две буквы, как у супервайзеров: KL, MX, UL...).
 --  Без бренда менеджер не войдёт — так сделано специально, чтобы пустое

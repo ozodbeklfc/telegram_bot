@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from data import DAYS
+from data import DAYS, ALL_DAYS
 
 PAGE_SIZE = 10
 
@@ -38,7 +38,8 @@ def build_paginated_keyboard(
 
 
 def build_days_keyboard(selected: list[str], taken: list[str] = None,
-                        full: list[str] = None) -> InlineKeyboardMarkup:
+                        full: list[str] = None,
+                        days: list[str] = None) -> InlineKeyboardMarkup:
     """
     Мультивыбор дней недели. Максимум 3 дня на точку.
 
@@ -53,7 +54,10 @@ def build_days_keyboard(selected: list[str], taken: list[str] = None,
     taken = taken or []
     full = full or []
     rows = []
-    for idx, day in enumerate(DAYS):
+    # days — рабочие дни агента; у базарщика Воскресенье вместо Понедельника.
+    # В кнопке — индекс в ALL_DAYS, он одинаков для всех агентов
+    for day in (days or DAYS):
+        idx = ALL_DAYS.index(day)
         if day in taken:
             mark = "🔒 "
         elif day in full:

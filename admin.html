@@ -894,10 +894,16 @@ const DAYS = [
   ["Пн", "Понедельник"], ["Вт", "Вторник"], ["Ср", "Среда"],
   ["Чт", "Четверг"],     ["Пт", "Пятница"], ["Сб", "Суббота"],
 ];
+// Для поиска короткой подписи — с воскресеньем (оно нужно только базарщикам)
+const DAYS_LOOKUP = DAYS.concat([["Вс", "Воскресенье"]]);
+// Полоска дней под точкой: у базарщика Вс вместо Пн и без субботы
+const BAZAR_STRIP = [["Вс", "Воскресенье"], ["Вт", "Вторник"], ["Ср", "Среда"],
+                     ["Чт", "Четверг"], ["Пт", "Пятница"]];
+let stripDays = DAYS;
 
 function dayStrip(daysText) {
   const list = (daysText || "").split(",").map(d => d.trim());
-  return '<div class="days">' + DAYS.map(([short, full]) =>
+  return '<div class="days">' + stripDays.map(([short, full]) =>
     `<div class="day ${list.includes(full) ? "on" : ""}">${short}</div>`
   ).join("") + '</div>';
 }
@@ -1366,10 +1372,11 @@ function renderAgents(agents) {
           ${a.problems ? `<span class="badge problem">${a.problems} ${plural(a.problems, "проблема", "проблемы", "проблем")}</span>` : ""}
         </div>
         <div class="meta">${a.points} ${plural(a.points, "точка", "точки", "точек")} ·
-          ${a.visits} ТРТ в неделю${
-          a.overBy
-            ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>`
-            : ""
+          ${a.isBazar
+            ? `базар, норма 180 точек${a.overBy
+                ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>` : ""}`
+            : `${a.visits} ТРТ в неделю${a.overBy
+                ? ` · <b class="over-mark">сверх нормы на ${a.overBy}</b>` : ""}`
         }${
           // Неделя может быть в норме, а один день забит вдвое. С тех пор
           // как смена дня перестала упираться в норму, это единственное
@@ -1473,24 +1480,48 @@ function applyDayFilter() {
 // Цифры берутся по всей базе агента, а не по показанному списку: при поиске
 // в списке остаются две точки, а лимит всё равно про все.
 function renderRules(r) {
-  const maxDay = r.maxVisitsPerDay || 36;
+  const bazar = !!r.isBazar;
+  stripDays = bazar ? BAZAR_STRIP : DAYS;
+  // Базарщик: норма — 180 ТОЧЕК, визиты и дни на точке не считаются
+  const maxDay = bazar ? Infinity : (r.maxVisitsPerDay || 36);
   const count = r.pointCount || 0;
   const days = r.workDays || DAYS.map(d => d[1]);
   const load = r.dayLoad || {};
-  const week = r.weekVisits || 0;
-  const cap = r.weekCapacity || maxDay * days.length;
+  const week = bazar ? count : (r.weekVisits || 0);
+  const cap = bazar ? (r.pointCapacity || 180)
+                    : (r.weekCapacity || maxDay * days.length);
   const over = week > cap;
+
+  // Тексты правил: у базарщика они другие
+  const nameBox = document.querySelector("#rules-body .rule:nth-of-type(1) .rule-name");
+  if (nameBox) {
+    nameBox.innerHTML = bazar
+      ? `Агент-базарщик: не больше <b>${cap}</b> точек
+         <span class="rule-hint">(работа Вс, Вт–Пт, визиты не считаются)</span>`
+      : `Не больше <b id="rule-max-day">36</b> ТРТ в один день
+         <span class="rule-hint">(<b id="rule-week-cap">180</b> в неделю)</span>`;
+  }
+  const topRule = document.getElementById("rule-top-fact");
+  if (topRule && topRule.closest(".rule")) {
+    topRule.closest(".rule").style.display = bazar ? "none" : "";
+  }
+  const ptRule = document.getElementById("rule-points-fact");
+  if (ptRule && ptRule.closest(".rule")) {
+    ptRule.closest(".rule").style.display = bazar ? "none" : "";
+  }
 
   // Числа берём из ответа, а не из вёрстки: лимиты задаются на сервере,
   // и страница не должна знать их наизусть
-  document.getElementById("rule-max-day").textContent = maxDay;
-  document.getElementById("rule-week-cap").textContent = cap;
+  const mdEl = document.getElementById("rule-max-day");
+  const wcEl = document.getElementById("rule-week-cap");
+  if (mdEl) mdEl.textContent = maxDay;
+  if (wcEl) wcEl.textContent = cap;
 
   // Главная цифра теперь визиты: лимита на точки больше нет
   const daysFact = document.getElementById("rule-days-fact");
   daysFact.textContent = over
     ? `${week} — сверх нормы на ${week - cap}`
-    : `${week} из ${cap}`;
+    : `${week} из ${cap}${bazar ? " точек" : ""}`;
   daysFact.className = "rule-fact" + (over ? " over" : "");
 
   const bar = document.getElementById("rule-week-bar");
@@ -1510,10 +1541,10 @@ function renderRules(r) {
   const box = document.getElementById("rule-day-load");
   box.innerHTML = days.map(full => {
     const n = load[full] || 0;
-    const short = (DAYS.find(d => d[1] === full) || [full.slice(0, 2)])[0];
+    const short = (DAYS_LOOKUP.find(d => d[1] === full) || [full.slice(0, 2)])[0];
     const cls = n > maxDay ? "over" : (n === maxDay ? "full" : "");
     return `<button type="button" data-day="${full}" class="${cls}"
-                    title="${full}: ${n} ТРТ">
+                    title="${full}: ${n} ${bazar ? "точек" : "ТРТ"}">
               <span class="d">${short}</span><span class="n">${n}</span>
             </button>`;
   }).join("");
@@ -1545,9 +1576,9 @@ function renderRules(r) {
   const peak = days.reduce(
     (best, d) => ((load[d] || 0) > (load[best] || 0) ? d : best), days[0]);
   const peakN = load[peak] || 0;
-  if (over) flags.push(`<span class="bad">+${week - cap} ТРТ</span>`);
+  if (over) flags.push(`<span class="bad">+${week - cap} ${bazar ? "точек" : "ТРТ"}</span>`);
   if (peakN > maxDay) {
-    const short = (DAYS.find(x => x[1] === peak) || [peak.slice(0, 2)])[0];
+    const short = (DAYS_LOOKUP.find(x => x[1] === peak) || [peak.slice(0, 2)])[0];
     flags.push(`<span class="bad">${short} ${peakN}</span>`);
   }
   if (top) flags.push(`<span>ТОП ${top}</span>`);
@@ -2344,7 +2375,7 @@ async function openDays(details) {
 
   daysMax = r.maxDays;
   daysLoad = r.dayLoad || {};
-  daysNorm = r.maxVisitsPerDay || 36;
+  daysNorm = r.isBazar ? Infinity : (r.maxVisitsPerDay || 36);
   pickedDays = (r.currentDays || []).slice();
   startDays = pickedDays.slice();
 
@@ -2368,7 +2399,7 @@ async function openDays(details) {
         // быть место, а места нет — и супервайзер идёт по цепочке
         const full = n >= daysNorm;
         const on = pickedDays.includes(d);
-        const short = (DAYS.find(x => x[1] === d) || [d.slice(0, 2)])[0];
+        const short = (DAYS_LOOKUP.find(x => x[1] === d) || [d.slice(0, 2)])[0];
         const hint = full
           ? `${d}: ${n} ТРТ — норма дня уже выбрана, но выбрать можно`
           : `${d}: ${n} ТРТ`;
@@ -2575,7 +2606,7 @@ function pickCandidate(agent, list, details) {
     <div class="day-load" style="margin-top:10px;">
       ${(details.workDays || []).map(d => {
         const n = (c.dayLoad || {})[d] || 0;
-        const short = (DAYS.find(x => x[1] === d) || [d.slice(0, 2)])[0];
+        const short = (DAYS_LOOKUP.find(x => x[1] === d) || [d.slice(0, 2)])[0];
         const full = (c.fullDays || []).includes(d);
         return `<span class="${full ? "over" : ""}">${short} ${n}</span>`;
       }).join("")}

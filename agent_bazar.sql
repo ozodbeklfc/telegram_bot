@@ -1,0 +1,16 @@
+-- =====================================================================
+--  Роль agent_bazar: агент-базарщик
+--  Работает Вс, Вт, Ср, Чт, Пт (понедельник — выходной, вместо него Вс).
+--  Норма — 180 ТОЧЕК. Визиты и число дней на одной точке не считаются.
+-- =====================================================================
+--  1. Выложите новые api.py, admin.html, index.html, bot.py, data.py,
+--     keyboards.py (commit + push), дождитесь деплоя.
+--  2. Если база ругается на check constraint по колонке role:
+--       psql "$DATABASE_URL" -c "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check"
+--  3. Назначьте роль агентам (впишите свои логины):
+--       psql "$DATABASE_URL" -c "UPDATE users SET role='agent_bazar' WHERE upper(login) IN ('NV4503','NV4504')"
+--     Проверка:
+--       psql "$DATABASE_URL" -c "SELECT login, role FROM users WHERE role='agent_bazar'"
+--  Вернуть обычным агентом:
+--       psql "$DATABASE_URL" -c "UPDATE users SET role='agent' WHERE upper(login)='NV4503'"
+-- =====================================================================

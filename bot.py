@@ -242,7 +242,8 @@ async def render_step(target_state, message: Message, state: FSMContext):
     elif s == AddStates.choosing_days.state:
         await message.answer(
             "1️⃣4️⃣ Выберите дни визита (можно до 3):",
-            reply_markup=build_days_keyboard(fsm_data.get("visit_days", [])),
+            reply_markup=build_days_keyboard(fsm_data.get("visit_days", []),
+                                             days=fsm_data.get("work_days")),
         )
     elif s == AddStates.waiting_comments.state:
         await message.answer("1️⃣5️⃣ Введите комментарий (если его нет — отправьте символ «-»):")
@@ -252,7 +253,8 @@ async def render_step(target_state, message: Message, state: FSMContext):
         await message.answer(
             "Выберите дни визита:",
             reply_markup=build_days_keyboard(fsm_data.get("visit_days", []),
-                                             fsm_data.get("taken_days", [])),
+                                             fsm_data.get("taken_days", []),
+                                             days=fsm_data.get("work_days")),
         )
     elif s == AttachStates.confirm.state:
         await send_attach_summary(message, state)
@@ -337,10 +339,13 @@ async def process_password(message: Message, state: FSMContext):
 
         await checking_msg.edit_text(
             f"✅ Успешный вход!\n\n👤 Агент: {login_value}\n\n"
-            f"📋 Правила: не больше {api.MAX_VISITS_PER_DAY} ТРТ в один день "
-            f"({api.MAX_VISITS_PER_DAY * len(data.DAYS)} в неделю).\n"
-            f"Обычная точка — один день в неделю, ТОП — до {api.MAX_VISIT_DAYS}.\n"
-            f"🔑 Сменить пароль — команда /change_password"
+            + (f"📋 Правила: работа Вс, Вт–Пт, не больше {api.BAZAR_MAX_POINTS} точек, "
+               f"визиты не считаются.\n"
+               if result.get("role") == "agent_bazar" else
+               f"📋 Правила: не больше {api.MAX_VISITS_PER_DAY} ТРТ в один день "
+               f"({api.MAX_VISITS_PER_DAY * len(data.DAYS)} в неделю).\n"
+               f"Обычная точка — один день в неделю, ТОП — до {api.MAX_VISIT_DAYS}.\n")
+            + f"🔑 Сменить пароль — команда /change_password"
         )
         await delete_message_safe(message)  # убираем пароль из переписки
         await ask_inn(message, state)
@@ -492,6 +497,9 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         if reason == "brand":
             head = "⛔️ В ЭТОЙ ТОЧКЕ ЗАКРЕПЛЁН ДРУГОЙ АГЕНТ ВАШЕГО БРЕНДА"
             body = f"👤 Агент: {check.get('blockedBy')}"
+        elif reason == "points_limit":
+            head = f"⛔️ У ВАС УЖЕ {check.get('pointCapacity')} ТОЧЕК — ЭТО ПРЕДЕЛ"
+            body = "Новую точку можно взять, только освободив одну из прежних."
         elif reason == "day_limit":
             head = f"⛔️ ВСЕ ДНИ ЗАПОЛНЕНЫ ПО {api.MAX_VISITS_PER_DAY} ТРТ"
             body = ("📅 Свободных дней не осталось.\n\n"
@@ -530,6 +538,7 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         "taken_days": taken,
         "full_days": full,
         "remaining_days": remaining,
+        "work_days": check.get("workDays"),
     })
     await state.set_state(AttachStates.choosing_days)
 
@@ -549,7 +558,7 @@ async def start_attach(message: Message, state: FSMContext, point: dict, header:
         f"{header}🏪 {point['pointName']}\n"
         f"🔢 Код: {point['pointCode']}{note}\n\n"
         f"Выберите {'дни' if max_here > 1 else 'день'} визита:",
-        reply_markup=build_days_keyboard([], taken, full),
+        reply_markup=build_days_keyboard([], taken, full, days=check.get("workDays")),
     )
     return True
 
@@ -558,7 +567,7 @@ def day_load_text(day_load: dict) -> str:
     """Сколько визитов у агента в каждый день — строкой для сообщения."""
     if not day_load:
         return ""
-    lines = [f"{d} — {day_load.get(d, 0)}" for d in data.DAYS if d in day_load]
+    lines = [f"{d} — {day_load.get(d, 0)}" for d in data.ALL_DAYS if d in day_load]
     return "Ваша загрузка по дням:\n" + "\n".join(lines)
 
 
@@ -860,6 +869,12 @@ async def add_delivery(callback: CallbackQuery, state: FSMContext):
     # и после ТОП-точки здесь осталась бы тройка от прошлого прикрепления
     await state.update_data(deliveryCode=delivery_code, visit_days=[],
                             taken_days=[], remaining_days=api.MAX_VISIT_DAYS_REGULAR)
+    load_b = await api.agent_load(fsm_data.get("agent", ""))
+    bazar = bool(load_b.get("isBazar"))
+    work_days = load_b.get("workDays") if load_b.get("success") else None
+    # Базарщик ездит на точку каждый день — дней можно выбрать сколько угодно
+    await state.update_data(work_days=work_days,
+                            remaining_days=len(work_days) if bazar else api.MAX_VISIT_DAYS_REGULAR)
 
     # Новая точка — это тоже визит, поэтому дневной лимит действует и здесь.
     # Иначе агент, упёршийся в 30 визитов, обходил бы правило через
@@ -880,7 +895,7 @@ async def add_delivery(callback: CallbackQuery, state: FSMContext):
         f"Новая точка закрепляется на ОДИН день в неделю. Если она окажется "
         f"ТОП-точкой, супервайзер отметит её, и дни можно будет добавить."
         f"{note}",
-        reply_markup=build_days_keyboard([], [], full),
+        reply_markup=build_days_keyboard([], [], full, days=work_days),
     )
     await safe_answer(callback)
 
@@ -932,7 +947,7 @@ async def paginate_handler(callback: CallbackQuery, state: FSMContext):
 )
 async def toggle_day(callback: CallbackQuery, state: FSMContext):
     idx = int(callback.data.split(":")[1])
-    day = data.DAYS[idx]
+    day = data.ALL_DAYS[idx]
 
     fsm_data = await state.get_data()
     selected = fsm_data.get("visit_days", [])
@@ -982,7 +997,8 @@ async def toggle_day(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(visit_days=selected)
     await callback.message.edit_reply_markup(
-        reply_markup=build_days_keyboard(selected, taken, full))
+        reply_markup=build_days_keyboard(selected, taken, full,
+                                         days=fsm_data.get("work_days")))
     await safe_answer(callback)
 
 
