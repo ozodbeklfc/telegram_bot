@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
@@ -764,12 +765,137 @@ async def point_details(point_code: str, agent: str = "") -> dict:
     }
 
 
-async def unattach_days(agent: str, point_code: str, days: list) -> dict:
+# ----------------------------------------------------------------------
+# ВСЕ ИЗМЕНЕНИЯ ПРИКРЕПЛЕНИЙ ИДУТ ЧЕРЕЗ ЗАЯВКУ ОПЕРАТОРУ.
+#
+# База бота синхронизируется с CRM, поэтому менять attachments напрямую
+# нельзя: сначала оператор проводит изменение в CRM и нажимает «Готово»,
+# и только тогда оно применяется здесь.
+#
+# Как это устроено: функции attach / set_visit_days / transfer_point /
+# unattach_* проверяют правила как обычно, а в самый момент записи, если
+# APPLYING не включён, вместо записи кладут заявку в operator_requests
+# (queue_change). При «Готово» тот же вызов выполняется ещё раз с
+# APPLYING = True — уже по-настоящему, с повторной проверкой правил.
+# ----------------------------------------------------------------------
+APPLYING = contextvars.ContextVar("applying_change", default=False)
+
+# Заявки, созданные супервайзером из панели (агенту о них не пишем)
+PANEL_KINDS = {"days": "Смена дней", "transfer": "Передача точки",
+               "unattach": "Открепление"}
+KIND_LABELS = {"add": "Добавление ТТ", "attach": "Прикрепление", **PANEL_KINDS}
+
+
+async def _point_title(point_code: str) -> str:
+    """Название точки для карточки заявки."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            name = await conn.fetchval(
+                "SELECT point_name FROM client_base WHERE point_code = $1 "
+                "ORDER BY (point_name IS NULL OR point_name = '') LIMIT 1",
+                point_code)
+            if not name:
+                name = await conn.fetchval(
+                    "SELECT max(point_name) FROM attachments WHERE point_code = $1",
+                    point_code)
+    except Exception:
+        return ""
+    return name or ""
+
+
+async def queue_change(kind: str, agent: str, point_code: str, point_name: str,
+                       visit_day: str, op: dict, readable: dict,
+                       by_login: str = "", tg_id=None, source: str = "",
+                       ok_message: str = "", warning: str = "") -> dict:
+    """
+    Кладёт изменение в лист оператора вместо прямой записи в базу.
+
+    op — что выполнить при «Готово»: {"fn": имя, "args": {...}}.
+    readable — строки для карточки оператора (было / стало и т. п.).
+    """
+    agent = (agent or "").strip().upper()
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            dup = await conn.fetchval(
+                """
+                SELECT id FROM operator_requests
+                 WHERE status = 'pending' AND payload ? '_op'
+                   AND upper(agent) = $1 AND point_code = $2
+                 LIMIT 1
+                """,
+                agent, point_code)
+    except Exception as e:
+        return _db_error(e)
+    if dup:
+        return {"success": False,
+                "message": "По этой точке уже есть заявка, которая ждёт "
+                           "оператора. Дождитесь её проведения."}
+
+    payload = dict(readable)
+    payload["_op"] = op
+    if by_login:
+        payload["Кто изменил"] = by_login.upper()
+    res = await create_request({
+        "kind": kind, "agent": agent, "pointCode": point_code,
+        "pointName": point_name, "visitDay": visit_day, "tgId": tg_id,
+        "source": source or ("panel" if kind in PANEL_KINDS else ""),
+        "payload": payload,
+    })
+    if not res.get("success"):
+        return {"success": False,
+                "message": "Не удалось отправить заявку оператору. "
+                           "Попробуйте ещё раз."}
+    return {"success": True, "queued": True, "requestId": res["id"],
+            "message": ok_message or ("Заявка отправлена оператору. В базе "
+                                      "изменение появится после проведения."),
+            "warning": warning}
+
+
+async def apply_change(op: dict) -> dict:
+    """Выполняет сохранённое изменение по-настоящему (при «Готово»)."""
+    fn, a = op.get("fn"), op.get("args") or {}
+    token = APPLYING.set(True)
+    try:
+        if fn == "attach":
+            return await attach(a["agent"], a["point_code"], a.get("point_name", ""),
+                                a["visit_day"], source=a.get("source", ""))
+        if fn == "set_visit_days":
+            return await set_visit_days(a["agent"], a["point_code"], a["days"],
+                                        by_login=a.get("by", ""))
+        if fn == "transfer_point":
+            return await transfer_point(a["point_code"], a["from_agent"],
+                                        a["to_agent"], a["days"], by_login=a.get("by", ""))
+        if fn == "unattach_days":
+            return await unattach_days(a["agent"], a["point_code"], a["days"],
+                                       by_login=a.get("by", ""))
+        if fn == "unattach_agent":
+            return await unattach_agent(a["agent"], a["point_code"],
+                                        by_login=a.get("by", ""))
+        return {"success": False, "message": f"Неизвестное действие: {fn}"}
+    finally:
+        APPLYING.reset(token)
+
+
+async def unattach_days(agent: str, point_code: str, days: list,
+                        by_login: str = "") -> dict:
     """Снимает у агента конкретные дни визита на точке."""
     agent = (agent or "").strip().upper()
     days = [d.strip() for d in (days or []) if d and d.strip()]
     if not agent or not point_code or not days:
         return {"success": False, "message": "Не указан агент, точка или дни"}
+
+    if not APPLYING.get():
+        return await queue_change(
+            "unattach", agent, point_code, await _point_title(point_code),
+            ", ".join(days),
+            {"fn": "unattach_days", "args": {"agent": agent, "point_code": point_code,
+                                              "days": days, "by": by_login}},
+            {"Действие": "Снять дни визита", "Снять дни": ", ".join(days)},
+            by_login=by_login,
+            ok_message="Заявка на открепление дней отправлена оператору. "
+                       "Дни снимутся после проведения.")
 
     try:
         pool = await get_pool()
@@ -789,11 +915,22 @@ async def unattach_days(agent: str, point_code: str, days: list) -> dict:
             "message": f"Откреплено дней: {removed}"}
 
 
-async def unattach_agent(agent: str, point_code: str) -> dict:
+async def unattach_agent(agent: str, point_code: str,
+                         by_login: str = "") -> dict:
     """Полностью снимает агента с точки."""
     agent = (agent or "").strip().upper()
     if not agent or not point_code:
         return {"success": False, "message": "Не указан агент или точка"}
+
+    if not APPLYING.get():
+        return await queue_change(
+            "unattach", agent, point_code, await _point_title(point_code), "",
+            {"fn": "unattach_agent", "args": {"agent": agent, "point_code": point_code,
+                                               "by": by_login}},
+            {"Действие": "Открепить агента от точки полностью"},
+            by_login=by_login,
+            ok_message=f"Заявка на открепление {agent} отправлена оператору. "
+                       "Агент снимется после проведения.")
 
     try:
         pool = await get_pool()
@@ -1007,6 +1144,19 @@ async def transfer_point(point_code: str, from_agent: str, to_agent: str,
                 "message": f"У {to_agent} в {', '.join(overloaded)} уже "
                            f"{MAX_VISITS_PER_DAY} ТРТ. Выберите другие дни."}
 
+    if not APPLYING.get():
+        return await queue_change(
+            "transfer", from_agent, point_code, await _point_title(point_code),
+            ", ".join(days),
+            {"fn": "transfer_point", "args": {"point_code": point_code,
+                                               "from_agent": from_agent, "to_agent": to_agent,
+                                               "days": days, "by": by_login}},
+            {"Действие": f"Передать точку {from_agent} → {to_agent}",
+             "Дни у нового агента": ", ".join(days)},
+            by_login=by_login,
+            ok_message=f"Заявка на передачу {from_agent} → {to_agent} отправлена "
+                       "оператору. Точка перейдёт после проведения.")
+
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -1210,6 +1360,18 @@ async def set_visit_days(agent: str, point_code: str, days: list,
     old_days = opts["currentDays"]
     if sorted(days) == sorted(old_days):
         return {"success": False, "message": "Это те же самые дни"}
+
+    if not APPLYING.get():
+        return await queue_change(
+            "days", agent, point_code, opts.get("pointName") or await _point_title(point_code),
+            ", ".join(days),
+            {"fn": "set_visit_days", "args": {"agent": agent, "point_code": point_code,
+                                               "days": days, "by": by_login}},
+            {"Было": ", ".join(old_days), "Станет": ", ".join(days)},
+            by_login=by_login, warning=warning,
+            ok_message=f"Заявка на смену дней ({', '.join(old_days)} → "
+                       f"{', '.join(days)}) отправлена оператору. "
+                       "Дни изменятся после проведения.")
 
     try:
         pool = await get_pool()
@@ -1695,7 +1857,7 @@ async def panel_unattach_days(token: str, agent: str, point_code: str, days: lis
         return denied
     if not await _agent_allowed(auth, agent):
         return {"success": False, "message": "Этот агент не в вашем подчинении"}
-    return await unattach_days(agent, point_code, days)
+    return await unattach_days(agent, point_code, days, by_login=auth["login"])
 
 
 async def panel_unattach_agent(token: str, agent: str, point_code: str) -> dict:
@@ -1716,7 +1878,7 @@ async def panel_unattach_agent(token: str, agent: str, point_code: str) -> dict:
                 break
         if not mine:
             return {"success": False, "message": "На этой точке нет ваших агентов"}
-    return await unattach_agent(agent, point_code)
+    return await unattach_agent(agent, point_code, by_login=auth["login"])
 
 
 async def panel_set_point_type(token: str, point_code: str, point_type: str) -> dict:
@@ -2359,6 +2521,16 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
                 "message": f"Можно выбрать ещё {remaining}, а выбрано {len(days)}. "
                            f"На эту точку — {limit_text}."}
 
+    if not APPLYING.get():
+        return await queue_change(
+            "attach", agent, point_code, point_name, ", ".join(days),
+            {"fn": "attach", "args": {"agent": agent, "point_code": point_code,
+                                       "point_name": point_name,
+                                       "visit_day": ", ".join(days), "source": source}},
+            {}, tg_id=tg_id, source=source,
+            ok_message="Заявка отправлена оператору. Точка закрепится за вами "
+                       "после того, как оператор проведёт её в системе.")
+
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -2379,17 +2551,8 @@ async def attach(agent: str, point_code: str, point_name: str, visit_day: str,
 
     # Заявка в лист оператора. Прикрепление в базе уже состоялось — оператору
     # остаётся провести его в учётной системе, и «Готово» отмечает именно это.
-    await create_request({
-        "kind": "attach",
-        "agent": agent,
-        "pointCode": point_code,
-        "pointName": point_name,
-        "visitDay": ", ".join(days),
-        "tgId": tg_id,
-        "source": source,
-    })
-
-    return {"success": True, "message": "Точка успешно прикреплена к вам!"}
+    # Дошли сюда только при проведении заявки (APPLYING): сама заявка уже есть
+    return {"success": True, "message": "Точка прикреплена"}
 
 
 async def _require_agent(login_value: str) -> dict | None:
@@ -2609,7 +2772,7 @@ def _request_row(r) -> dict:
     return {
         "id": r["id"],
         "kind": r["kind"],
-        "kindLabel": "Добавление ТТ" if r["kind"] == "add" else "Прикрепление",
+        "kindLabel": KIND_LABELS.get(r["kind"], "Прикрепление"),
         "agent": r["agent"],
         "pointCode": r["point_code"] or "",
         "pointName": r["point_name"] or "—",
@@ -2622,7 +2785,8 @@ def _request_row(r) -> dict:
         "doneBy": r["done_by"] or "",
         # Причина отказа. У проведённых заявок пусто
         "reason": (r["reason"] or "") if "reason" in r.keys() else "",
-        "details": dict(json.loads(r["payload"])) if r["payload"] else {},
+        "details": {k: v for k, v in (json.loads(r["payload"]) if r["payload"] else {}).items()
+                    if k != "_op"},
     }
 
 
@@ -2680,7 +2844,8 @@ async def mark_request_done(request_id: int, operator_login: str) -> dict:
                 UPDATE operator_requests
                    SET status = 'done', done_at = now(), done_by = $2
                  WHERE id = $1 AND status = 'pending'
-             RETURNING id, kind, agent, point_name, point_code, visit_day, tg_id
+             RETURNING id, kind, agent, point_name, point_code, visit_day, tg_id,
+                       payload
                 """,
                 request_id, (operator_login or "").strip().upper(),
             )
@@ -2690,9 +2855,35 @@ async def mark_request_done(request_id: int, operator_login: str) -> dict:
     if row is None:
         return {"success": False, "message": "Заявка уже обработана — обновите лист"}
 
+    # Изменение применяется в базе ТОЛЬКО сейчас, после «Готово». Заявка
+    # уже занята (status = done) — это защита от двойного нажатия: второй
+    # оператор получит «уже обработана» и ничего не применит повторно.
+    # Если применить не вышло (правила за это время нарушились), заявку
+    # возвращаем в очередь, а оператору показываем причину: он может
+    # отказать с пояснением.
+    op = (json.loads(row["payload"]) if row["payload"] else {}).get("_op")
+    if op:
+        result = await apply_change(op)
+        if not result.get("success"):
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE operator_requests SET status = 'pending', "
+                        "done_at = NULL, done_by = NULL WHERE id = $1",
+                        request_id)
+            except Exception:
+                logger.exception("Не удалось вернуть заявку %s в очередь", request_id)
+            return {"success": False,
+                    "message": "Не удалось применить изменение: "
+                               f"{result.get('message')}. Заявка осталась в "
+                               "листе — можно отказать с причиной."}
+
     # Уведомление агенту. Сбой отправки заявку не отменяет: она уже закрыта,
-    # и оператор не должен нажимать «Готово» второй раз из-за Telegram
-    await _notify_agent_done(row)
+    # и оператор не должен нажимать «Готово» второй раз из-за Telegram.
+    # Об изменениях супервайзера агента уведомляют сами операции
+    # (смена дня, передача), поэтому общее сообщение — только по заявкам агента
+    if row["kind"] not in PANEL_KINDS:
+        await _notify_agent_done(row)
 
     return {"success": True, "message": "Заявка перенесена в архив", "id": row["id"]}
 
@@ -2736,13 +2927,19 @@ async def reject_request(request_id: int, operator_login: str,
                            done_by = $2, reason = $3
                      WHERE id = $1 AND status = 'pending'
                  RETURNING id, kind, agent, point_name, point_code,
-                           visit_day, tg_id, reason
+                           visit_day, tg_id, reason, payload
                     """,
                     request_id, (operator_login or "").strip().upper(), reason,
                 )
 
                 snyato = 0
-                if row is not None and row["kind"] == "attach" and row["point_code"]:
+                # Заявка нового образца в базу ещё не попадала — снимать
+                # нечего, а старое прикрепление (того же агента, те же дни)
+                # трогать нельзя. Снимаем только у заявок старого образца
+                is_new = bool(row is not None and row["payload"]
+                              and "_op" in json.loads(row["payload"]))
+                if (row is not None and not is_new and row["kind"] == "attach"
+                        and row["point_code"]):
                     # Снимаем ровно те дни, что были в заявке. Если
                     # супервайзер успел переставить точку, здесь не
                     # совпадёт ничего — и это правильнее, чем снести
@@ -2782,9 +2979,12 @@ async def reject_request(request_id: int, operator_login: str,
         return {"success": False,
                 "message": "Заявка уже обработана — обновите лист"}
 
-    await _notify_agent_rejected(row, snyato)
+    if row["kind"] not in PANEL_KINDS:
+        await _notify_agent_rejected(row, snyato)
 
     hvost = (f" Точка снята с {row['agent']}." if snyato
+             else " В базу изменение не вносилось."
+             if is_new
              else " Прикрепление уже изменено — снимать было нечего."
              if row["kind"] == "attach" else "")
     return {"success": True, "id": row["id"], "removed": snyato,
@@ -2945,6 +3145,7 @@ async def my_requests(agent: str, limit: int = 60) -> dict:
                 SELECT {REQUEST_COLUMNS}
                   FROM operator_requests
                  WHERE upper(agent) = $1
+                   AND COALESCE(source, '') <> 'panel'
                  ORDER BY (status = 'pending') DESC, created_at DESC
                  LIMIT $2
                 """,
